@@ -29,6 +29,7 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoiceAsr, normalizeAsrConfig } from './voice-asr.mjs';
+import { normalizeExecConfig, policyError, runCommand } from './qq-exec.mjs';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -919,6 +920,7 @@ function loadConfig() {
         getStickerImage: true,
         sendSticker: true,
         sendImage: true,
+        runCode: true,
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
@@ -1073,6 +1075,7 @@ function loadConfig() {
     getStickerImage: true,
     sendSticker: true,
     sendImage: true,
+    runCode: true,
     setStickerRemark: false,
     stickerNote: true,
     collectSticker: true,
@@ -1114,6 +1117,8 @@ function loadConfig() {
   };
   // socialV2.voice.asr：收到语音时自动转写（QQ 服务端优先，本地 faster-whisper 兜底）。
   cfg.socialV2.voice.asr = normalizeAsrConfig(cfg.socialV2.voice.asr ?? {}, { root: ROOT });
+  // socialV2.exec：owner 私聊的受控命令执行（qq_run_code），行为参数 + 开关。
+  cfg.socialV2.exec = normalizeExecConfig(cfg.socialV2.exec ?? {});
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
@@ -7511,6 +7516,43 @@ async function main() {
           } catch (error) {
             sendJson({ ok: false, error: String(error?.message ?? error) }, 400);
           }
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/run-code') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const command = String(body.command ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (!command) { sendJson({ ok: false, error: 'command 不能为空' }, 400); return; }
+          // owner-only：只有管理员私聊能执行（fail-closed，非 owner 一律 403，不看后续 token）。
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('runCode')) { sendJson({ ok: false, error: '工具未启用：qq_run_code' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          if (cfg.socialV2?.exec?.enabled === false) { sendJson({ ok: false, error: '受控命令执行已关闭（socialV2.exec.enabled=false）' }, 403); return; }
+          // 策略校验（命令白名单 + 注入黑名单），不过就直接拒，不 spawn 任何进程。
+          const execReason = policyError(command);
+          if (execReason) {
+            ownerAudit.append('qq_run_code', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { rejected: execReason, command }, ref: key });
+            sendJson({ ok: false, error: execReason }, 403);
+            return;
+          }
+          const execResult = await runCommand(command, {
+            cwd: ROOT,
+            timeoutMs: cfg.socialV2?.exec?.timeoutMs,
+            maxOutputChars: cfg.socialV2?.exec?.maxOutputChars,
+            maskRoot: ROOT,
+          });
+          ownerAudit.append('qq_run_code', {
+            actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true },
+            auth: 'reserved2-owner',
+            result: { command, code: execResult.code, truncated: execResult.truncated, durationMs: execResult.durationMs, error: execResult.error },
+            ref: key,
+          });
+          sendJson({ ok: execResult.ok, key, command: execResult.command, code: execResult.code, output: execResult.output, truncated: execResult.truncated, durationMs: execResult.durationMs, error: execResult.error });
           return;
         }
 
