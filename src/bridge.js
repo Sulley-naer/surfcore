@@ -10,7 +10,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
@@ -30,6 +30,23 @@ import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-po
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoiceAsr, normalizeAsrConfig } from './voice-asr.mjs';
 import { normalizeExecConfig, policyError, runCommand } from './qq-exec.mjs';
+import {
+  normalizeTaskConfig,
+  normalizeTaskState,
+  createTask,
+  popNextTask,
+  startTask,
+  finishTask,
+  cancelTask,
+  runningTasks,
+  pendingTasks,
+  pendingReports,
+  urgentReports,
+  markNotified,
+  archiveNotified,
+  reportBlock,
+  summarize as summarizeOwnerTasks,
+} from './owner-tasks.mjs';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -921,6 +938,9 @@ function loadConfig() {
         sendSticker: true,
         sendImage: true,
         runCode: true,
+        taskRun: true,
+        taskStatus: true,
+        taskCancel: true,
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
@@ -1076,6 +1096,9 @@ function loadConfig() {
     sendSticker: true,
     sendImage: true,
     runCode: true,
+    taskRun: true,
+    taskStatus: true,
+    taskCancel: true,
     setStickerRemark: false,
     stickerNote: true,
     collectSticker: true,
@@ -1119,6 +1142,8 @@ function loadConfig() {
   cfg.socialV2.voice.asr = normalizeAsrConfig(cfg.socialV2.voice.asr ?? {}, { root: ROOT });
   // socialV2.exec：owner 私聊的受控命令执行（qq_run_code），行为参数 + 开关。
   cfg.socialV2.exec = normalizeExecConfig(cfg.socialV2.exec ?? {});
+  // socialV2.ownerTasks：后台任务队列（qq_task_run 等），行为参数 + 开关。
+  cfg.socialV2.ownerTasks = normalizeTaskConfig(cfg.socialV2.ownerTasks ?? {});
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
@@ -1501,6 +1526,17 @@ function log(...args) {
 
 // 主人特权操作审计（单写者：桥接；插件只读）。写入失败不阻塞业务，health 由 /api/status 暴露。
 const ownerAudit = createOwnerAudit({ dir: STATE_DIR, log: (...args) => log(...args) });
+
+// —— owner 后台任务（qq_task_run）：状态文件 + 输出目录。单写者：桥接；插件只读。 ——
+const OWNER_TASKS_FILE = path.join(STATE_DIR, 'owner-tasks.json');
+const OWNER_TASKS_OUT_DIR = path.join(STATE_DIR, 'task-outputs');
+let ownerTaskState = normalizeTaskState(readJsonSafe(OWNER_TASKS_FILE, null));
+function saveOwnerTaskState() {
+  try { atomicWriteJson(OWNER_TASKS_FILE, ownerTaskState); } catch (error) { log('[任务] 状态写盘失败:', error?.message ?? error); }
+}
+// 唤醒 prompt 注入过的「待汇报」任务 id 快照：她给主人私聊发出消息即视为已汇报。
+let lastTaskReportIds = [];
+let lastTaskReportAt = 0;
 const auditOnceAt = new Map();
 function auditOnce(scope, key, ms = 60_000) {
   const id = `${scope}|${key}`;
@@ -3776,6 +3812,12 @@ async function main() {
         if (cfg.purpose?.enabled !== false) {
           try { startPurposeLoop(); } catch (error) { log(`[目的] 启动失败：${error?.message ?? error}`); }
         }
+        // owner 后台任务：启动时推进队列（上次重启中断的 running 已被 normalizeTaskState 标 failed，
+        // 属于紧急汇报，等 SnowLuma/purpose 就绪后再决定是否当场通知）。
+        try {
+          drainOwnerTasks();
+          setTimeout(() => scheduleOwnerTaskNotify(), 30_000);
+        } catch (error) { log(`[任务] 启动失败：${error?.message ?? error}`); }
         if (currentMode === 'reserved2') {
           // 首次确定模式为 reserved2 后再恢复持久化的有限睡眠定时器，
           // 避免在 initial chat 模式下设置定时器导致 timeout 唤醒被模式守卫吞掉。
@@ -7555,6 +7597,86 @@ async function main() {
             ref: key,
           });
           sendJson({ ok: execResult.ok, key, command: execResult.command, code: execResult.code, output: execResult.output, truncated: execResult.truncated, durationMs: execResult.durationMs, error: execResult.error });
+          return;
+        }
+
+        // —— owner 后台任务：挂任务 / 查状态 / 撤排队 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/task-run') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const title = String(body.title ?? '').trim();
+          const command = String(body.command ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (!title) { sendJson({ ok: false, error: 'title 不能为空' }, 400); return; }
+          if (!command) { sendJson({ ok: false, error: 'command 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('taskRun')) { sendJson({ ok: false, error: '工具未启用：qq_task_run' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          if (cfg.socialV2?.ownerTasks?.enabled === false) { sendJson({ ok: false, error: '后台任务已关闭（socialV2.ownerTasks.enabled=false）' }, 403); return; }
+          // 命令策略与 qq_run_code 共用（黑名单模式默认放行、只拦破坏性指令）。
+          const execMode = cfg.socialV2?.exec?.mode === 'whitelist' ? 'whitelist' : 'blacklist';
+          const execReason = policyError(command, { mode: execMode });
+          if (execReason) {
+            ownerAudit.append('qq_task_run', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { rejected: execReason, command, title }, ref: key });
+            sendJson({ ok: false, error: execReason }, 403);
+            return;
+          }
+          const created = createTask(ownerTaskState, { title, command, timeoutMs: body.timeoutMs, config: cfg.socialV2.ownerTasks });
+          if (!created.ok) {
+            const reasonText = created.reason === 'queue-full'
+              ? `任务队列已满（最多排队 ${cfg.socialV2.ownerTasks.maxQueue} 个），稍后再试`
+              : `创建失败：${created.reason}`;
+            ownerAudit.append('qq_task_run', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { rejected: created.reason, command, title }, ref: key });
+            sendJson({ ok: false, error: reasonText }, 429);
+            return;
+          }
+          saveOwnerTaskState();
+          ownerAudit.append('qq_task_run', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { taskId: created.task.id, event: 'queued', command, title }, ref: key });
+          log(`[任务] 入队: #${created.task.seq}「${title}」`);
+          drainOwnerTasks();
+          sendJson({ ok: true, task: created.task });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/tasks') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('taskStatus')) { sendJson({ ok: false, error: '工具未启用：qq_task_status' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          sendJson({ ok: true, ...summarizeOwnerTasks(ownerTaskState) });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/task-cancel') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const taskId = String(body.taskId ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (!taskId) { sendJson({ ok: false, error: 'taskId 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('taskCancel')) { sendJson({ ok: false, error: '工具未启用：qq_task_cancel' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          if (cfg.socialV2?.ownerTasks?.enabled === false) { sendJson({ ok: false, error: '后台任务已关闭（socialV2.ownerTasks.enabled=false）' }, 403); return; }
+          const cancelled = cancelTask(ownerTaskState, taskId);
+          if (!cancelled.ok) {
+            sendJson({ ok: false, error: cancelled.reason === 'not-pending:running' ? '运行中的任务第一版不支持喊停' : `取消失败：${cancelled.reason}` }, 400);
+            return;
+          }
+          saveOwnerTaskState();
+          ownerAudit.append('qq_task_cancel', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { taskId, event: 'cancelled' }, ref: key });
+          log(`[任务] 取消排队: ${taskId}`);
+          sendJson({ ok: true, task: cancelled.task });
           return;
         }
 
@@ -11563,6 +11685,7 @@ async function main() {
       ? biliMemory.briefBlock()
       : '';
     const memoryCardText = memoryCardPromptBlock();
+    const taskText = ownerTaskPromptBlock(600);
     return [
       roleLine,
       // 人格卡是动机的先验：她是什么样的人，决定她更容易被什么打动。
@@ -11571,6 +11694,7 @@ async function main() {
       adminText,
       memoryCardText ? `【记忆卡】\n${memoryCardText.slice(0, 2400)}` : '',
       biliBrief ? `【B站记忆】\n${biliBrief.slice(0, 1800)}` : '',
+      taskText || '',
     ].filter(Boolean);
   }
 
@@ -11952,6 +12076,90 @@ async function main() {
     setTimeout(() => { void warmPurposeState().catch((error) => log(`[目的] 预热失败：${error?.message ?? error}`)); }, 1500).unref?.();
     // 启动时立刻看一次：停机期间错过的那一枪，只要不在安静时段 / 主人正在聊天就补上。
     setTimeout(() => { void purposeTick(); }, 8000).unref?.();
+  }
+
+  // ===== owner 后台任务：执行器 / 队列推进 / 通知调度 =====
+
+  /** 唤醒/主动搭话时注入的任务块（无待汇报任务时返回空串）。 */
+  function ownerTaskPromptBlock(maxChars) {
+    try { return reportBlock(ownerTaskState, { maxChars: maxChars ?? (Number(cfg.socialV2?.ownerTasks?.summaryMaxChars) || 500) }); }
+    catch { return ''; }
+  }
+
+  /** 任务命令的 cwd/mask 策略与 qq_run_code 共用黑/白名单模式。 */
+  function ownerExecMode() {
+    return cfg.socialV2?.exec?.mode === 'whitelist' ? 'whitelist' : 'blacklist';
+  }
+
+  /** 一条任务结束：写状态 → 推进队列 → 必要时通知。 */
+  function finishOwnerTaskRun(id, { ok, code, summary }) {
+    const task = taskById(ownerTaskState, id);
+    if (!task || task.status !== 'running') return;
+    finishTask(ownerTaskState, id, { ok, code, summary, outputFile: `task-outputs/${id}.log` });
+    saveOwnerTaskState();
+    ownerAudit.append('qq_task_run', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'background', result: { taskId: id, event: 'finished', ok, code, summary } });
+    log(`[任务] 结束: #${task.seq}「${task.title}」${ok ? 'done' : 'failed'} code=${code ?? '-'}${summary ? `（${summary}）` : ''}`);
+    drainOwnerTasks();
+    scheduleOwnerTaskNotify();
+  }
+
+  /** 后台跑一条任务：spawn cmd，输出追加写 state/task-outputs/<id>.log。 */
+  function runBackgroundTask(task) {
+    const outFile = path.join(OWNER_TASKS_OUT_DIR, `${task.id}.log`);
+    try { fs.mkdirSync(OWNER_TASKS_OUT_DIR, { recursive: true }); } catch {}
+    const timeoutMs = Math.min(Number(task.timeoutMs) || cfg.socialV2.ownerTasks.defaultTimeoutMs, cfg.socialV2.ownerTasks.maxTimeoutMs);
+    let fd = -1;
+    try { fd = fs.openSync(outFile, 'a'); fs.writeSync(fd, `--- ${new Date().toISOString()} 开始 ---\n$ ${task.command}\n`); } catch {}
+    const write = (buf) => { try { if (fd >= 0) fs.writeSync(fd, buf); } catch {} };
+    const child = spawn('cmd.exe', ['/d', '/s', '/c', task.command], {
+      cwd: ownerExecMode() === 'blacklist' ? os.homedir() : ROOT,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
+    child.stdout?.on('data', write);
+    child.stderr?.on('data', write);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      write(`\n[spawn error] ${error?.message ?? error}\n`);
+      try { if (fd >= 0) fs.closeSync(fd); } catch {}
+      fd = -1;
+      finishOwnerTaskRun(task.id, { ok: false, code: null, summary: `spawn 失败: ${error?.message ?? error}` });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const timedOut = code === null;
+      write(`\n--- ${new Date().toISOString()} 结束 code=${code ?? 'null'}${timedOut ? '（超时）' : ''} ---\n`);
+      try { if (fd >= 0) fs.closeSync(fd); } catch {}
+      fd = -1;
+      const summary = timedOut ? `执行超时（${timeoutMs}ms）` : (code === 0 ? '完成' : `失败（code=${code}）`);
+      finishOwnerTaskRun(task.id, { ok: !timedOut && code === 0, code, summary });
+    });
+  }
+
+  /** 队列推进：空闲槽位拉 pending → running → 后台跑。 */
+  function drainOwnerTasks() {
+    if (cfg.socialV2?.ownerTasks?.enabled === false) return;
+    const maxActive = Math.max(1, Number(cfg.socialV2.ownerTasks.maxActive) || 2);
+    while (runningTasks(ownerTaskState).length < maxActive) {
+      const next = popNextTask(ownerTaskState);
+      if (!next) break;
+      startTask(ownerTaskState, next.id);
+      saveOwnerTaskState();
+      log(`[任务] 开始: #${next.seq}「${next.title}」`);
+      ownerAudit.append('qq_task_run', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'background', result: { taskId: next.id, event: 'started', command: next.command } });
+      runBackgroundTask(next);
+    }
+  }
+
+  /** 通知调度：失败/要拍板 → force purpose 立刻打断汇报；普通完成 → 攒着她自然醒来。 */
+  function scheduleOwnerTaskNotify() {
+    if (cfg.socialV2?.ownerTasks?.enabled === false) return;
+    const urgent = urgentReports(ownerTaskState);
+    if (!urgent.length) return;
+    if (purposeRun) return;
+    log(`[任务] 有 ${urgent.length} 条失败/待拍板 → 触发主动通知`);
+    void runPurposeOnce({ force: true }).catch((error) => log('[任务] 主动通知失败:', error?.message ?? error));
   }
 
   /** 她真的往主人私聊发了消息（所有发送端点最终都会记到这里）。 */
@@ -13244,6 +13452,16 @@ async function main() {
     if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
     // 目的机制：这一发是不是「主动找主人」那一回合里真发出去的；是就记下来，回合结束记 sent。
     try { notePurposeOutbound(key, list); } catch {}
+    // owner 后台任务：唤醒 prompt 注入过的「待汇报」任务，她给主人私聊发出消息即视为已汇报（攒着汇报的收口）。
+    try {
+      if (key === `private:${String(cfg.ownerQQ ?? '')}` && lastTaskReportIds.length && Date.now() - lastTaskReportAt < 24 * 3600_000) {
+        markNotified(ownerTaskState, lastTaskReportIds);
+        archiveNotified(ownerTaskState);
+        saveOwnerTaskState();
+        lastTaskReportIds = [];
+        lastTaskReportAt = 0;
+      }
+    } catch {}
     // AI 实际发言/参与了，说明这轮选择“继续回复”，沉睡前观察状态作废；下次想睡需重新走 5 分钟等待。
     st.preSleepWaitSatisfiedAt = 0;
     st.preSleepWaitObservedAt = 0;
@@ -13734,7 +13952,14 @@ async function main() {
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
     const memoryCardText = memoryCardPromptBlock();
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    // owner 后台任务：待汇报/运行中/排队中的任务块，让她先汇报任务再闲聊。
+    const taskText = ownerTaskPromptBlock();
+    const taskLine = taskText ? `${taskText}\n\n` : '';
+    if (taskLine) {
+      lastTaskReportIds = pendingReports(ownerTaskState).map((t) => t.id);
+      lastTaskReportAt = Date.now();
+    }
+    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + taskLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -13742,6 +13967,7 @@ async function main() {
       admin: adminLine.length,
       bili: biliLine.length,
       memory: memoryCardLine.length,
+      task: taskLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
       antiAi: antiAiLine.length,

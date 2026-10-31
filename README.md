@@ -35,6 +35,17 @@
 - 配置：`config.json` 的 `socialV2.exec`（`mode` / 超时 / 输出上限 / 总开关）与 `socialV2.tools.runCode`（工具开关，默认开）。
 - 生效条件：改 `src/` 要重启桥接；改 MCP 工具要重启 DSH 并重跑 `node scripts/setup-dsh.mjs`。
 
+### 新增：owner 后台任务队列（`qq_task_run` / `qq_task_status` / `qq_task_cancel`）
+
+让 QQ 私聊里的管理员能挂长任务（下载/安装/构建）到后台队列，不占对话回合；完成/失败后我自然醒来时先汇报任务，失败或要拍板的任务当场主动通知主人。并发 2、排队上限 10；执行日志写文件（对话里只报路径）；唤醒 prompt 注入【任务】块；命令策略与 `qq_run_code` 共用黑名单模式。
+
+- `src/owner-tasks.mjs`（新增）：纯逻辑状态机。`TASK_STATE_VERSION=1`；默认配置 `maxActive:2 / maxQueue:10 / defaultTimeoutMs:30min / maxTimeoutMs:6h / maxHistory:50`；状态 `pending/running/done/failed/need-decision/cancelled`；`createTask`（超队拒 `queue-full`）/ `startTask` / `finishTask` / `cancelTask`（只撤 pending，running 第一版不喊停）/ `pendingReports`（done 类且未汇报）/ `urgentReports`（failed/need-decision）/ `reportBlock`（汇报块，紧急在前、只放结论与日志路径）/ `summarize`。重启时 running→failed 并补「桥接重启，任务中断」。
+- `src/bridge.js`（改动）：import/归一化 `cfg.socialV2.ownerTasks`；状态文件 `state/owner-tasks.json`、日志目录 `state/task-outputs/<id>.log`；后台执行器 `spawn cmd /c` + 超时 kill + drain 循环；端点 `POST /api/socialV2/task-run`（owner-only、agent token、reserved2、`tools.taskRun`、`ownerTasks.enabled`、命令策略同 qq_run_code）、`/api/socialV2/tasks`（状态概览）、`/api/socialV2/task-cancel`（撤排队）；通知调度 `scheduleOwnerTaskNotify`（urgent 才 force purpose 当场打断，普通攒着）；`markNotified` 收口 = 唤醒注入任务块后她给主人私聊发出消息即标已汇报（`recordSentMessagesV2` 钩子）；direct wake prompt 与 `purposeContextBlocks` 都注入【任务】块；启动时 `drainOwnerTasks` + 30s 后 `scheduleOwnerTaskNotify`；审计留痕 `qq_task_run` / `qq_task_cancel`。
+- `src/mcp-snowluma-safe.js`（改动）：注册 MCP 工具 `qq_task_run`（`key/token/title/command/timeoutMs`）、`qq_task_status`、`qq_task_cancel`。
+- `scripts/test-owner-tasks.mjs`（新增）＋ `scripts/test-audit.mjs` / `scripts/audit-bridge-harness.mjs`（登记 / 接线）。
+- 配置：`config.json` 的 `socialV2.ownerTasks`（`enabled/maxActive/maxQueue/defaultTimeoutMs/maxTimeoutMs/maxHistory/summaryMaxChars`）与 `socialV2.tools.taskRun / taskStatus / taskCancel`（默认开）。
+- 生效条件：同上（重启桥接 + 重启 DSH + `setup-dsh`）。
+
 
 ### 官方更新（main 有本地提交时，设置页「一键更新」的 `--ff-only` 不适用）
 
