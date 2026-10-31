@@ -20,6 +20,7 @@ import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as voiceDiagnostics from '../src/voice-diagnostics.js';
+import * as voiceAsr from '../src/voice-asr.mjs';
 import * as allowlist from '../src/allowlist.js';
 import * as callname from '../src/callname.js';
 import * as personaIdentity from '../src/persona-identity.js';
@@ -253,6 +254,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     ...voiceDiagnostics,
+    ...voiceAsr,
     ...allowlist,
     ...callname,
     ...personaIdentity,

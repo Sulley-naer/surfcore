@@ -28,6 +28,7 @@ import {
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
+import { createVoiceAsr, normalizeAsrConfig } from './voice-asr.mjs';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -1109,6 +1110,8 @@ function loadConfig() {
     autoReadback: true,
     ...(cfg.socialV2?.voice ?? {})
   };
+  // socialV2.voice.asr：收到语音时自动转写（QQ 服务端优先，本地 faster-whisper 兜底）。
+  cfg.socialV2.voice.asr = normalizeAsrConfig(cfg.socialV2.voice.asr ?? {}, { root: ROOT });
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
@@ -1526,6 +1529,13 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// 收到语音时的转写控制器。main() 里用当时生效的 cfg 初始化；模块级函数（segmentsToText /
+// handleIncoming）通过它取配置，避免把 cfg 一路透传下去。
+let moduleVoiceAsr = null;
+function voiceAsrController() {
+  return moduleVoiceAsr;
+}
+
 async function segmentsToText(segments, options = {}) {
   const { resolveAtName, resolveReply, includeReply = true } = options ?? {};
   // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
@@ -1550,7 +1560,23 @@ async function segmentsToText(segments, options = {}) {
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
       case 'image': out.push('[图片]'); break;
-      case 'record': out.push('[语音]'); break;
+      case 'record': {
+        // 转写是可选能力：只有调用方显式传 asr（收到消息那条路径）才做；
+        // 历史回放 / 引用解析等场景保持轻量的「[语音]」占位，避免多余算力。
+        const asr = options.asr;
+        if (asr?.ctl) {
+          let got = null;
+          try {
+            got = await asr.ctl.transcribe({ messageId: asr.messageId, record: d, key: asr.key, senderId: asr.senderId });
+          } catch (error) {
+            got = { text: '', error: String(error?.message ?? error) };
+          }
+          out.push(got?.text ? `[语音] ${got.text}` : '[语音]（转写失败）');
+        } else {
+          out.push('[语音]');
+        }
+        break;
+      }
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
       case 'reply': {
@@ -1698,6 +1724,7 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  moduleVoiceAsr = createVoiceAsr({ getCfg: () => cfg, log });
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();
@@ -14461,10 +14488,11 @@ async function main() {
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
-    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
-    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
-    const mediaList = extractMediaFromSegments(event.message ?? []);
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
+    const asrOpts = { ctl: voiceAsrController(), messageId: messageRef, key, senderId: String(event.user_id ?? '') };
+    const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply, asr: asrOpts });
+    const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false, asr: asrOpts });
+    const mediaList = extractMediaFromSegments(event.message ?? []);
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';
     const refsToStore = [...new Set([messageRef, seqRef].filter(Boolean))];
     if (refsToStore.length > 0 && mediaList.length > 0) {
