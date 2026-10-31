@@ -346,6 +346,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_list_stickers: 'listStickers',
   qq_get_sticker_image: 'getStickerImage',
   qq_send_sticker: 'sendSticker',
+  qq_send_image: 'sendImage',
   qq_collect_sticker: 'collectSticker',
   qq_get_self_image: 'getSelfImage',
   qq_sticker_note: 'stickerNote',
@@ -1211,6 +1212,34 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `发送表情失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.sendImage !== false) {
+  server.tool(
+    'qq_send_image',
+    '把一张图片发到 QQ 会话（本地文件路径 / http(s) URL / base64:// / 插件返回的 Markdown 图片行都可以）。适合把表情包插件（如 dsh-nekowhale-stickers）返回的 `![名字](路径)` 真正发到 QQ —— 那些工具只返回本地路径或 Markdown，QQ 客户端看不见。一次只能发一张；要说话请先用 qq_send_message。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      image: z.string().describe('本地图片路径、http(s) URL、base64:// 数据，或 Markdown 图片行 ![名字](路径)'),
+      caption: z.string().optional().describe('可选的同气泡文字（一般不建议，QQ 习惯文字和图分开）'),
+      replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（可选）'),
+      atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（可选）')
+    },
+    async ({ key, token, image, caption, replyToMessageId, atUserId }) => {
+      try {
+        const data = await agentApi('/api/socialV2/send-image', {
+          method: 'POST',
+          body: JSON.stringify({ key, image: String(image), caption: caption ?? '', replyToMessageId, atUserId: atUserId ?? null }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 300000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `发送图片失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );

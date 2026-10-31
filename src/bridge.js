@@ -918,6 +918,7 @@ function loadConfig() {
         listStickers: true,
         getStickerImage: true,
         sendSticker: true,
+        sendImage: true,
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
@@ -1071,6 +1072,7 @@ function loadConfig() {
     listStickers: true,
     getStickerImage: true,
     sendSticker: true,
+    sendImage: true,
     setStickerRemark: false,
     stickerNote: true,
     collectSticker: true,
@@ -2579,6 +2581,71 @@ async function main() {
     stickerEntries = updated.entries;
     saveStickerStoreSafe();
     return { entry: updated.entry, messageId: data?.message_id ?? null };
+  }
+
+  // 把任意图片（本地文件 / http(s) URL / base64）发到 QQ。给表情包插件这类
+  // 外部工具用：它们的 sticker_send 只返回 `![名字](本地路径或URL)`，QQ 看不见。
+  // 与文本/表情共用 sendChain，保证真人般的先后顺序。
+  async function sendImageV2({ key, image, caption = '', replyToMessageId = null, atUserId = null } = {}) {
+    const parsed = parseTargetKey(String(key ?? ''));
+    if (!parsed) throw new Error('key 格式应为 group:群号 或 private:QQ号');
+    const { kind, id } = parsed;
+    const numericId = Number(id);
+    if (!Number.isFinite(numericId) || numericId <= 0) throw new Error('目标 id 无效');
+    if (!modeAllowed(key, kind, numericId, cfg, currentMode)) throw new Error(`目标不在白名单内（${key}）`);
+    let src = String(image ?? '').trim();
+    // 允许直接贴 Markdown 图片： ![名字](路径或URL)
+    const md = /^!\[[^\]]*\]\(([^)]+)\)$/.exec(src);
+    if (md) src = md[1].trim();
+    if (!src) throw new Error('image 不能为空（本地路径 / http(s) URL / base64:// / Markdown 图片）');
+    let buf = null;
+    if (/^https?:\/\//i.test(src)) {
+      const got = await safeFetchBuffer(src, MAX_MEDIA_BYTES);
+      buf = got.buffer;
+    } else if (src.startsWith('base64://')) {
+      buf = Buffer.from(src.slice('base64://'.length), 'base64');
+    } else {
+      const fsPath = path.resolve(src);
+      const st = fs.statSync(fsPath);
+      if (!st.isFile()) throw new Error(`不是文件：${fsPath}`);
+      if (st.size > MAX_MEDIA_BYTES) throw new Error(`图片过大（${st.size} 字节）`);
+      buf = fs.readFileSync(fsPath);
+    }
+    if (!buf?.length) throw new Error('图片为空');
+    if (buf.length > MAX_MEDIA_BYTES) throw new Error(`图片过大（${buf.length} 字节）`);
+    const segments = [];
+    if (replyToMessageId !== null && replyToMessageId !== undefined && String(replyToMessageId).trim()) {
+      segments.push({ type: 'reply', data: { id: String(replyToMessageId).trim() } });
+    }
+    if (atUserId !== null && atUserId !== undefined && String(atUserId).trim()) {
+      segments.push({ type: 'at', data: { qq: String(atUserId).trim() } });
+    }
+    const cap = String(caption ?? '').trim();
+    if (cap) segments.push({ type: 'text', data: { text: cap.slice(0, 1000) } });
+    segments.push({ type: 'image', data: { file: 'base64://' + buf.toString('base64') } });
+    const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
+    const params = kind === 'private' ? { user_id: numericId, message: segments } : { group_id: numericId, message: segments };
+    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    let resolveSend;
+    let rejectSend;
+    const done = new Promise((res, rej) => { resolveSend = res; rejectSend = rej; });
+    sendChain = sendChain.then(async () => {
+      try {
+        const res = await fetch(`${httpUrl}/${action}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) },
+          body: JSON.stringify(params),
+          signal: AbortSignal.timeout(20000),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.status !== 'ok' || body.retcode !== 0) {
+          throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}`);
+        }
+        resolveSend(body.data);
+      } catch (error) { rejectSend(error); }
+    });
+    const data = await done;
+    return { messageId: data?.message_id ?? null, bytes: buf.length };
   }
 
   // 更新本地 AI 认知（含义/标签/用法/情绪/内容/关键词）。
@@ -7403,6 +7470,25 @@ async function main() {
           } catch (error) {
             // 额度只在真正发出后才记账（voiceBudgetCommit），所以失败路径无需回滚。
             sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+          }
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/send-image') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('sendImage')) { sendJson({ ok: false, error: '工具未启用：qq_send_image' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式发送必须携带 agent token' }, 403); return; }
+          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403); return; }
+          try {
+            const result = await sendImageV2({ key, image: body.image, caption: body.caption ?? '', replyToMessageId: body.replyToMessageId ?? null, atUserId: body.atUserId ?? null });
+            sendJson({ ok: true, key, ...result });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error) }, 400);
           }
           return;
         }
