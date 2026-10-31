@@ -2586,6 +2586,19 @@ async function main() {
   // 把任意图片（本地文件 / http(s) URL / base64）发到 QQ。给表情包插件这类
   // 外部工具用：它们的 sticker_send 只返回 `![名字](本地路径或URL)`，QQ 看不见。
   // 与文本/表情共用 sendChain，保证真人般的先后顺序。
+  // 本机回环图片：表情包插件（dsh-nekowhale-stickers）默认把图片回成
+  // http://127.0.0.1:<DSH Web 端口>/x-nekowhale-stickers/s/<hash>.gif，而 safeFetchBuffer
+  // 的 SSRF 防护会拒绝一切内网/回环地址。这里只放行「回环地址 + 配置里的路径前缀」
+  // （默认就是表情包图片路由），避免被诱导去探测别的本机服务。
+  function loopbackImageUrl(url) {
+    let parsed;
+    try { parsed = new URL(url); } catch { return null; }
+    if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname)) return null;
+    const raw = cfg.socialV2?.images?.loopbackPrefixes;
+    const prefixes = Array.isArray(raw) && raw.length ? raw.map(String) : ['/x-nekowhale-stickers/'];
+    return prefixes.some((prefix) => prefix && parsed.pathname.startsWith(prefix)) ? parsed : null;
+  }
+
   async function sendImageV2({ key, image, caption = '', replyToMessageId = null, atUserId = null } = {}) {
     const parsed = parseTargetKey(String(key ?? ''));
     if (!parsed) throw new Error('key 格式应为 group:群号 或 private:QQ号');
@@ -2600,8 +2613,16 @@ async function main() {
     if (!src) throw new Error('image 不能为空（本地路径 / http(s) URL / base64:// / Markdown 图片）');
     let buf = null;
     if (/^https?:\/\//i.test(src)) {
-      const got = await safeFetchBuffer(src, MAX_MEDIA_BYTES);
-      buf = got.buffer;
+      if (loopbackImageUrl(src)) {
+        const res = await fetch(src, { signal: AbortSignal.timeout(20000) });
+        if (!res.ok) throw new Error(`读取本机图片失败：HTTP ${res.status}`);
+        const len = Number(res.headers.get('content-length') ?? 0);
+        if (len > MAX_MEDIA_BYTES) throw new Error(`图片过大（${len} 字节）`);
+        buf = Buffer.from(await res.arrayBuffer());
+      } else {
+        const got = await safeFetchBuffer(src, MAX_MEDIA_BYTES);
+        buf = got.buffer;
+      }
     } else if (src.startsWith('base64://')) {
       buf = Buffer.from(src.slice('base64://'.length), 'base64');
     } else {
