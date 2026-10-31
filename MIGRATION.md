@@ -26,6 +26,7 @@ node scripts/portable/export-port.mjs --voice refs   # 推荐：代码+参考音
 - `surfcore/` — `repo/state` 的数据（`mode.json`、`sessions.json`、`social-v2.json`、表情库、`console-token` 等）
 - `surfcore-home/` — `~/.dsh/surfcore` 的合体层（角色卡 `characters/char-*/`、**每角色记忆卡**、`alignments.json` 等）
 - `templates/` — `config.example.json` + `paths.example.json`（新机照着填）
+- `portable/` — `bootstrap-windows.ps1` + `port-doctor.mjs` + `export-port.mjs`（自包含，新机解压就能跑）
 - `manifest.json` — 版本、逐文件 sha256、机器路径清单、脱敏扫描报告
 
 **明确不打包**：`config.json`（含密钥）、`~/.dsh/surfcore/config.json`、所有 `.venv*`、`backups/`、`billing/`、`*.log`、`bridge.lock`、telemetry jsonl。语音包里的权重/venv 见 `--voice` 档位。
@@ -38,7 +39,7 @@ node scripts/portable/export-port.mjs --voice refs   # 推荐：代码+参考音
 
 ```powershell
 # 解压后进入包目录，运行：
-powershell -ExecutionPolicy Bypass -File <包目录>\scripts\portable\bootstrap-windows.ps1 -Package <包目录> -Voice refs
+powershell -ExecutionPolicy Bypass -File <包目录>\portable\bootstrap-windows.ps1 -Package <包目录> -Voice refs
 # 参数：-RepoDir（默认 D:\surfcore\repo）-RuntimeBase（默认 E:\DeepSeeK）
 #       -SkipVoice / -SkipAsr / -SkipSnowluma 跳过对应重建
 ```

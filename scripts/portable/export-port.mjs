@@ -7,6 +7,7 @@
 //   ├─ surfcore/          # repo/state 的运行时数据（QQ 会话映射、记忆、表情库、黑话库…）
 //   ├─ surfcore-home/     # ~/.dsh/surfcore 的合体层数据（角色卡、记忆卡、B站数据、对齐记录…）
 //   ├─ templates/         # config.example.json / paths.example.json（新机照着填）
+//   ├─ portable/          # bootstrap-windows.ps1 / port-doctor.mjs / export-port.mjs（自包含）
 //   └─ manifest.json      # 版本、机器路径清单、逐文件 sha256、脱敏扫描报告
 // 默认再压缩成 surfcore-port-<时间戳>.zip（用系统 tar.exe）。
 //
@@ -186,6 +187,12 @@ async function copyRoots(stageRoot) {
   for (const t of ['config.example.json', 'paths.example.json']) {
     const src = path.join(ROOT, t);
     if (fs.existsSync(src) && !DRY_RUN) fs.copyFileSync(src, path.join(stageRoot, 'templates', t));
+  }
+  // portable 脚本（自包含：新机解压即可跑 bootstrap，不必先 clone）
+  fs.mkdirSync(path.join(stageRoot, 'portable'), { recursive: true });
+  for (const t of ['export-port.mjs', 'bootstrap-windows.ps1', 'port-doctor.mjs']) {
+    const src = path.join(ROOT, 'scripts', 'portable', t);
+    if (fs.existsSync(src) && !DRY_RUN) fs.copyFileSync(src, path.join(stageRoot, 'portable', t));
   }
   return { manifest, redactions, totalBytes };
 }

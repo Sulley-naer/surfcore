@@ -3,7 +3,8 @@
 ## 对 SurfCore 的改动（自用）
 
 > 本仓库是自用 fork（`Sulley-naer/surfcore`，上游 `origin = Mieksido/surfcore`）。
-> 改动都在 `feat/voice-asr` 分支。
+> 自用改动在 `feat/voice-asr` 分支（语音转写 + 发图），迁移工具在 `feat/portable` 分支（基于 `feat/voice-asr`）。
+> **暂不合并进 `main`**（合进后设置页「一键更新」的 `--ff-only` 会永久失效），更新上游走手动 merge。
 
 ### 新增：收到 QQ 语音自动转写
 
@@ -35,6 +36,40 @@
 - `scripts/portable/bootstrap-windows.ps1`（新增）：新机重建（装工具 / clone / 恢复数据 / 重建 venv）。
 - `scripts/portable/port-doctor.mjs`（新增）：迁移后体检（数据/路径/语音/ASR/SnowLuma 逐项 PASS/WARN/FAIL）。
 - `MIGRATION.md`（新增）：完整迁移手册。
+
+**怎么迁移（`feat/portable` 分支上）**
+
+旧机（现在这台）导出：
+
+```powershell
+cd D:\surfcore\repo
+git checkout feat/portable
+node scripts/portable/export-port.mjs --voice refs
+# 产物：_exports\surfcore-port-<时间戳>.zip（内含 portable\ 三个脚本，自包含）
+```
+
+`--voice` 三档：`none`（纯数据，最小）/ `refs`（推荐，含语音代码＋参考音频，约 85MB）/ `all`（连 GPT-SoVITS 权重一起，约 1.6G）。
+
+把 zip 拷到新机，解压后直接跑（不用先 clone，bootstrap 会自己 clone）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File <包目录>\portable\bootstrap-windows.ps1 -Package <包目录> -Voice refs
+```
+
+手工填密钥（脚本故意不代填）：
+
+- `repo\config.json`：`consoleToken`、`snowluma.accessToken`（HTTP）、`admin.qq`、`ownerQQ`、`allow` 白名单
+- `repo\paths.json`：本机路径（SnowLuma / ffmpeg / faster-whisper）
+- SnowLuma 的 `config\onebot_*.json`（WS token，和 HTTP 是两套）从旧机搬来
+
+体检收尾：
+
+```powershell
+node scripts\portable\port-doctor.mjs   # 全绿即成功
+node scripts\test-audit.mjs             # 106/108（历史失败 2 个属正常）
+```
+
+然后重启 DSH。完整手册见 `MIGRATION.md`。
 
 ### 官方更新（main 有本地提交时，设置页「一键更新」的 `--ff-only` 不适用）
 
