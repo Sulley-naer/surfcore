@@ -17,8 +17,13 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { resolveFfmpeg } from './voice-core.js';
 
-export const ASR_DEFAULTS = Object.freeze({
-  enabled: true,
+const SILK_MAGIC = Buffer.from('#!SILK_V3', 'latin1');
+/** QQ 语音是腾讯 SILK v3，魔数 `#!SILK_V3`；ffmpeg 解不了，交给 python 的 pilk。 */
+function isSilk(buf) {
+  try { return Buffer.isBuffer(buf) && buf.includes(SILK_MAGIC); } catch { return false; }
+}
+
+export const ASR_DEFAULTS = Object.freeze({  enabled: true,
   backend: 'auto',            // auto | qq | local
   scope: 'owner',             // owner | whitelist | all
   maxSeconds: 60,             // 超过这个时长的语音不转写（省算力）
@@ -85,13 +90,15 @@ export function extractAudioRef(payload = {}) {
   };
   const base64 = first('base64', 'b64', 'data_base64');
   if (base64) return { kind: 'base64', value: base64.replace(/^data:[^,]*,/, '') };
+  // QQ 的 record 段里 `url` 才是可下载的真地址，`file` 往往只是个内部 amr 文件名（如
+  // 7d159ca….amr），不是本地路径。所以 url 优先级要高于 file。
+  const url = first('url', 'http_url');
+  if (url) return { kind: 'url', value: url };
   const file = first('file', 'path', 'file_path');
   if (file.startsWith('base64://')) return { kind: 'base64', value: file.slice('base64://'.length) };
   if (/^data:[^,]*;base64,/i.test(file)) return { kind: 'base64', value: file.replace(/^data:[^,]*,/, '') };
   if (/^https?:\/\//i.test(file)) return { kind: 'url', value: file };
   if (file) return { kind: 'file', value: file };
-  const url = first('url', 'http_url');
-  if (url) return { kind: 'url', value: url };
   return null;
 }
 
@@ -239,11 +246,18 @@ export function createVoiceAsr({ getCfg, log = () => {} } = {}) {
       if (buf.length > asr.maxBytes) throw new Error(`音频过大（${buf.length} 字节）`);
       const raw = path.join(tmp, 'in.bin');
       fs.writeFileSync(raw, buf);
-      const wav = path.join(tmp, 'in.wav');
-      const ffmpeg = resolveFfmpeg({ ffmpegPath: vc.ffmpegPath || null });
-      const conv = await toWav(ffmpeg, raw, wav, Math.min(timeoutMs, 30000));
-      if (!conv.ok) throw new Error(conv.error || '音频转码失败');
-      const out = await runWhisper({ cfg: { ...asr, script: asr.script, python: asr.python, modelDir: asr.modelDir, device: asr.device, computeType: asr.computeType, language: asr.language }, audioFile: wav, timeoutMs: Math.min(asr.localTimeoutMs, timeoutMs) });
+      let audioFile;
+      if (isSilk(buf)) {
+        // 腾讯 SILK v3：ffmpeg 解不了，直接交给 transcribe.py（它用 pilk 解成 16k PCM）。
+        audioFile = raw;
+      } else {
+        const wav = path.join(tmp, 'in.wav');
+        const ffmpeg = resolveFfmpeg({ ffmpegPath: vc.ffmpegPath || null });
+        const conv = await toWav(ffmpeg, raw, wav, Math.min(timeoutMs, 30000));
+        if (!conv.ok) throw new Error(conv.error || '音频转码失败');
+        audioFile = wav;
+      }
+      const out = await runWhisper({ cfg: { ...asr, script: asr.script, python: asr.python, modelDir: asr.modelDir, device: asr.device, computeType: asr.computeType, language: asr.language }, audioFile, timeoutMs: Math.min(asr.localTimeoutMs, timeoutMs) });
       if (out.error) throw new Error(out.error);
       return out.text;
     } finally {
