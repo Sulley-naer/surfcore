@@ -26,13 +26,13 @@
 
 ### 新增：owner 受控命令执行（`qq_run_code`）
 
-让 QQ 私聊里的管理员能让我在本机跑一条只读命令（`git status` / `ls` / `cat 文件`…），一问一答式，结果贴回 QQ。
+让 QQ 私聊里的管理员能让我在本机跑命令，一问一答式，结果贴回 QQ。**默认黑名单模式**：放行任意命令、只拦破坏性指令（递归/强制删除、格式化、关机、改 ACL、注册表、杀进程、服务/账户操作等）；可切回**白名单模式**（首词白名单，仅只读命令）作保守回退。
 
-- `src/qq-exec.mjs`（新增）：命令策略 + 执行器。首词白名单（git 只读子命令 / node·npm·pnpm 仅版本号 / ls·dir·cat·type·more·grep·rg·find·where·which·echo·pwd）＋ 注入黑名单（拒 `; | & < > ^ % $ 反引号 括号` 与控制符，只能单条简单命令）＋ 危险词黑名单（git 写操作 / find `-exec`·`-delete` / `node -e`·`npm run` 等任意执行）＋ 超时 60s ＋ 输出截断 8k ＋ 根路径脱敏。
-- `src/bridge.js`（改动）：端点 `POST /api/socialV2/run-code`。owner 强校验（`key === private:ownerQQ`，非主人 403）＋ agent token ＋ reserved2 ＋ 工具开关四道校验；执行留痕 `state/owner-audit.jsonl`（`qq_run_code` 事件，不写 token）。
+- `src/qq-exec.mjs`（新增）：命令策略 + 执行器，支持 `mode: blacklist|whitelist`（默认 blacklist）。黑名单模式＝破坏性指令黑名单（扫描整条命令，拦 `del /s`·`rm -rf`·`format`·`shutdown`·`icacls`·`reg delete`·`taskkill`·`sc stop`·`net user`·`robocopy /mir`·fork bomb 等）＋ 高危元字符（拒反引号 `$ % ^` 与控制符，放行 `; | & < > ( )` 拼接/重定向/分组）；白名单模式＝旧的首词白名单＋危险词。两种模式都超时 60s ＋ 输出截断 8k。
+- `src/bridge.js`（改动）：端点 `POST /api/socialV2/run-code`。owner 强校验（`key === private:ownerQQ`，非主人 403）＋ agent token ＋ reserved2 ＋ 工具开关四道校验；黑名单模式 `cwd` 用用户主目录、不脱敏路径（要「动整台电脑」），白名单模式 `cwd` 用 repo 根并脱敏；执行留痕 `state/owner-audit.jsonl`（`qq_run_code` 事件，不写 token）。
 - `src/mcp-snowluma-safe.js`（改动）：注册 MCP 工具 `qq_run_code`（参数 `key` / `token` / `command`）。
 - `scripts/test-qq-exec.mjs`（新增）＋ `scripts/test-audit.mjs` / `scripts/audit-bridge-harness.mjs`（登记 / 接线）。
-- 配置：`config.json` 的 `socialV2.exec`（超时 / 输出上限 / 总开关）与 `socialV2.tools.runCode`（工具开关，默认开）。
+- 配置：`config.json` 的 `socialV2.exec`（`mode` / 超时 / 输出上限 / 总开关）与 `socialV2.tools.runCode`（工具开关，默认开）。
 - 生效条件：改 `src/` 要重启桥接；改 MCP 工具要重启 DSH 并重跑 `node scripts/setup-dsh.mjs`。
 
 

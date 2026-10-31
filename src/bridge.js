@@ -7533,18 +7533,20 @@ async function main() {
           if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
           if (cfg.socialV2?.exec?.enabled === false) { sendJson({ ok: false, error: '受控命令执行已关闭（socialV2.exec.enabled=false）' }, 403); return; }
-          // 策略校验（命令白名单 + 注入黑名单），不过就直接拒，不 spawn 任何进程。
-          const execReason = policyError(command);
+          // 策略校验（黑名单模式默认放行、只拦破坏性指令；白名单模式拦首词/参数/元字符）。
+          const execMode = cfg.socialV2?.exec?.mode === 'whitelist' ? 'whitelist' : 'blacklist';
+          const execReason = policyError(command, { mode: execMode });
           if (execReason) {
             ownerAudit.append('qq_run_code', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { rejected: execReason, command }, ref: key });
             sendJson({ ok: false, error: execReason }, 403);
             return;
           }
           const execResult = await runCommand(command, {
-            cwd: ROOT,
+            cwd: execMode === 'blacklist' ? os.homedir() : ROOT,
             timeoutMs: cfg.socialV2?.exec?.timeoutMs,
             maxOutputChars: cfg.socialV2?.exec?.maxOutputChars,
-            maskRoot: ROOT,
+            maskRoot: execMode === 'blacklist' ? null : ROOT,
+            mode: execMode,
           });
           ownerAudit.append('qq_run_code', {
             actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true },
