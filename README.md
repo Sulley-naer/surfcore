@@ -12,6 +12,18 @@
 - `scripts/test-voice-asr.mjs`（新增）＋ `scripts/test-audit.mjs` / `scripts/audit-bridge-harness.mjs`（登记/接线）。
 - 运行时（不在 git 里）：`E:\DeepSeeK\faster-whisper\`（venv + small 模型 + `transcribe.py` + `stt_server.py`，常驻端口 8766）。
 - 配置：`config.json` 的 `socialV2.voice.asr`（gitignored，不随仓库走）。
+### 新增：把图片真正发到 QQ（`qq_send_image`）
+
+`sticker_send` 之类的插件只返回 `![名字](本地路径或 URL)`，QQ 客户端看不见；这个工具负责把图真的发出去。
+
+- `src/bridge.js`：新增 `sendImageV2()` 与端点 `POST /api/socialV2/send-image`。入参支持本地路径 / `http(s)` URL / `base64://` / Markdown 图片行（自动剥掉 `![..](..)` 外壳），统一转 base64 走 SnowLuma 的 `image` 段；挂在 `sendChain` 上保证「先文字后图」。沿用 agent token、白名单、reserved2、静默模式四道校验，单图 8MB 上限。
+- `src/bridge.js`：新增 `loopbackImageUrl()`。SSRF 防护（`src/safe-fetch.js`）原本拒绝一切内网/回环地址，而表情包插件默认把图回成 `http://127.0.0.1:4386/x-nekowhale-stickers/s/<hash>.gif`，于是发图必然报「禁止访问内网/本机地址」。现在只放行「回环 host（`127.0.0.1` / `localhost` / `::1`）＋ 命中 `socialV2.images.loopbackPrefixes` 的路径前缀」（默认 `["/x-nekowhale-stickers/"]`），其余地址仍走 `safeFetchBuffer`，不会被诱导去读本机别的接口。
+- `src/mcp-snowluma-safe.js`：注册 MCP 工具 `qq_send_image`（参数 `key` / `token` / `image` / `caption?` / `replyToMessageId?` / `atUserId?`）。
+- `plugins/surfcore/qq-tool-restrict.mjs`：`SAFE_EXACT` 增加 `sticker_search`、`sticker_send`、`meme_render`、`sticker_manage`，否则表情包插件的工具一调就被桥接守卫拒绝（该模块在 DSH 进程内加载，改完要重启 DSH）。
+- `dsh/agent-presets/qq-chat-v2/agent.cordis.yml`：表情段落补一句用法——`sticker_send` 的返回值要交给 `qq_send_image` 才会真的出现在 QQ 里。
+- 配置：`config.json` 的 `socialV2.images.loopbackPrefixes`（gitignored）。
+- 生效条件：改 `src/` 要重启桥接；改 MCP 工具/preset 要重启 DSH 并重跑 `node scripts/setup-dsh.mjs`。
+
 
 ### 官方更新（main 有本地提交时，设置页「一键更新」的 `--ff-only` 不适用）
 
