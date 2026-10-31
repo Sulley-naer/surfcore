@@ -171,6 +171,12 @@ const SAFE_PREFIXES = [
 const SAFE_EXACT = new Set([
   'ask_user_question',
   'todo_write',
+  // 表情包插件 dsh-nekowhale-stickers（2026-11-01 安装）：只做表情检索/发送/模板拼图，
+  // 不含本地执行或进程能力。meme_render 的 image 参数可读本地图片，自用场景接受。
+  'sticker_search',
+  'sticker_send',
+  'meme_render',
+  'sticker_manage',
   // 第三方上下文压缩（billion-context 注入的全局工具）：只操作上下文，不含本地执行/网络写操作。
   // 2026-10-30 用户要求放行：不放行时模型会反复重试被拒工具（实测一个回合 197 次），
   // 且 QQ 会话本身没有这两套压缩就更容易爆上下文。
