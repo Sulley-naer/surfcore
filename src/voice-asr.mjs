@@ -17,6 +17,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { resolveFfmpeg } from './voice-core.js';
+import { runtimePath } from './runtime-paths.js';
 
 const SILK_MAGIC = Buffer.from('#!SILK_V3', 'latin1');
 /** QQ 语音是腾讯 SILK v3，魔数 `#!SILK_V3`；ffmpeg 解不了，交给 python 的 pilk。 */
@@ -66,6 +67,9 @@ export function normalizeAsrConfig(input = {}, { root = process.cwd() } = {}) {
   };
   const backend = ['auto', 'qq', 'local'].includes(String(src.backend)) ? String(src.backend) : ASR_DEFAULTS.backend;
   const scope = ['owner', 'whitelist', 'all'].includes(String(src.scope)) ? String(src.scope) : ASR_DEFAULTS.scope;
+  const python = runtimePath('asrPython', { root, cfgValue: src.python, fallback: ASR_DEFAULTS.python });
+  const script = runtimePath('asrScript', { root, cfgValue: src.script, fallback: ASR_DEFAULTS.script });
+  const modelDir = runtimePath('asrModelDir', { root, cfgValue: src.modelDir, fallback: ASR_DEFAULTS.modelDir });
   return {
     enabled: src.enabled !== false,
     backend,
@@ -75,17 +79,17 @@ export function normalizeAsrConfig(input = {}, { root = process.cwd() } = {}) {
     timeoutMs: num(src.timeoutMs, ASR_DEFAULTS.timeoutMs, 1000, 300000),
     qqTimeoutMs: num(src.qqTimeoutMs, ASR_DEFAULTS.qqTimeoutMs, 500, 120000),
     localTimeoutMs: num(src.localTimeoutMs, ASR_DEFAULTS.localTimeoutMs, 1000, 300000),
-    python: abs(src.python, ASR_DEFAULTS.python),
-    script: abs(src.script, ASR_DEFAULTS.script),
-    modelDir: abs(src.modelDir, ASR_DEFAULTS.modelDir),
+    python,
+    script,
+    modelDir,
     device: String(src.device ?? ASR_DEFAULTS.device).trim() || ASR_DEFAULTS.device,
     computeType: String(src.computeType ?? ASR_DEFAULTS.computeType).trim() || ASR_DEFAULTS.computeType,
     language: String(src.language ?? ASR_DEFAULTS.language).trim() || ASR_DEFAULTS.language,
     cacheTtlMs: num(src.cacheTtlMs, ASR_DEFAULTS.cacheTtlMs, 0, 24 * 3600 * 1000),
     serverEnabled: src.serverEnabled === true,
     serverUrl: String(src.serverUrl ?? ASR_DEFAULTS.serverUrl).trim() || ASR_DEFAULTS.serverUrl,
-    serverPython: abs(src.serverPython, ASR_DEFAULTS.serverPython),
-    serverScript: abs(src.serverScript, ASR_DEFAULTS.serverScript),
+    serverPython: runtimePath('asrServerPython', { root, cfgValue: src.serverPython, fallback: python }),
+    serverScript: runtimePath('asrServerScript', { root, cfgValue: src.serverScript, fallback: path.join(path.dirname(script), 'stt_server.py') }),
   };
 }
 

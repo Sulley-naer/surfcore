@@ -29,6 +29,7 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoiceAsr, normalizeAsrConfig } from './voice-asr.mjs';
+import { applyRuntimePaths } from './runtime-paths.js';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -1272,6 +1273,9 @@ function loadConfig() {
   // 没有这个环境变量，就回退 config.json。
   const dshWebUrl = String(process.env.DSH_WEB_URL ?? '').trim();
   if (dshWebUrl) cfg.dsh.baseUrl = dshWebUrl;
+
+  // 跨设备迁移：paths.json / 环境变量里的运行时路径在这里覆盖 config.json（见 runtime-paths.js）。
+  applyRuntimePaths(cfg, ROOT);
 
   return cfg;
 }

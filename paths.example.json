@@ -1,0 +1,23 @@
+{
+  "_说明": "这是跨设备迁移时唯一需要按新机器改动的文件（gitignored）。把这里填成新机器的路径即可，config.json 里的密钥/白名单不用整份覆盖。优先级：环境变量 > paths.json > config.json 现有值。相对路径按仓库根解析。",
+  "snowlumaHome": "E:/DeepSeeK/SnowLuma-v2.2.1",
+  "snowlumaLauncher": "E:/DeepSeeK/SnowLuma-v2.2.1",
+  "ffmpeg": "E:/DeepSeeK/ffmpeg/bin/ffmpeg.exe",
+  "voiceDir": "",
+  "asrPython": "E:/DeepSeeK/faster-whisper/.venv/Scripts/python.exe",
+  "asrScript": "E:/DeepSeeK/faster-whisper/transcribe.py",
+  "asrModelDir": "E:/DeepSeeK/faster-whisper/models/small",
+  "asrServerPython": "",
+  "asrServerScript": "",
+  "_环境变量": {
+    "snowlumaHome": "SURFCORE_SNOWLUMA_HOME",
+    "snowlumaLauncher": "SURFCORE_SNOWLUMA_LAUNCHER",
+    "ffmpeg": "SURFCORE_FFMPEG",
+    "voiceDir": "SURFCORE_VOICE_DIR",
+    "asrPython": "SURFCORE_ASR_PYTHON",
+    "asrScript": "SURFCORE_ASR_SCRIPT",
+    "asrModelDir": "SURFCORE_ASR_MODEL_DIR",
+    "asrServerPython": "SURFCORE_ASR_SERVER_PYTHON",
+    "asrServerScript": "SURFCORE_ASR_SERVER_SCRIPT"
+  }
+}

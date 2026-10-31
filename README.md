@@ -24,6 +24,17 @@
 - 配置：`config.json` 的 `socialV2.images.loopbackPrefixes`（gitignored）。
 - 生效条件：改 `src/` 要重启桥接；改 MCP 工具/preset 要重启 DSH 并重跑 `node scripts/setup-dsh.mjs`。
 
+### 新增：跨设备迁移工具（路径抽象 + 导出/重建/体检）
+
+换新机时不用手动改一堆绝对路径，也避免把 5.7G 的 venv 和密钥搬来搬去。改在 `feat/portable` 分支。
+
+- `src/runtime-paths.js`（新增）：9 个路径键的解析层，优先级 环境变量 > `paths.json` > `config.json` 现有值 > 默认；相对路径按仓库根解析。`paths.json` 不存在时零行为改变。
+- `paths.example.json`（新增）＋ `.gitignore`（忽略 `paths.json`、`_exports/`、`roles/阿眠.md`）。
+- `src/bridge.js` / `src/voice-asr.mjs` / `scripts/audit-bridge-harness.mjs`（改动）：接线 `applyRuntimePaths` 与 `runtimePath`，把 snowluma home、ffmpeg、asr 的 python/script/modelDir 抽成可配置路径。
+- `scripts/portable/export-port.mjs`（新增）：导出数据包（`--voice none|refs|all`、`--mask`、`--no-zip`、`--dry-run`），逐文件 sha256 + 脱敏扫描进 `manifest.json`。
+- `scripts/portable/bootstrap-windows.ps1`（新增）：新机重建（装工具 / clone / 恢复数据 / 重建 venv）。
+- `scripts/portable/port-doctor.mjs`（新增）：迁移后体检（数据/路径/语音/ASR/SnowLuma 逐项 PASS/WARN/FAIL）。
+- `MIGRATION.md`（新增）：完整迁移手册。
 
 ### 官方更新（main 有本地提交时，设置页「一键更新」的 `--ff-only` 不适用）
 

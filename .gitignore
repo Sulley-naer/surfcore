@@ -5,6 +5,8 @@ node_modules/
 # Runtime state and local config (never publish)
 state/
 config.json
+paths.json
+_exports/
 *.log
 *.bak
 *.bak-*
@@ -70,6 +72,7 @@ audio/
 # 本次清理：旧工作区/迁移备份/本机人格卡不进公开仓库
 /_backups/
 /roles/小咪.md
+/roles/阿眠.md
 /plugins/surfcore/scripts/merge-agents-persona.mjs
 dist/*.zip
 
