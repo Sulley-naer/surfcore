@@ -1725,6 +1725,13 @@ let stateDirHardened = null;
 async function main() {
   const cfg = loadConfig();
   moduleVoiceAsr = createVoiceAsr({ getCfg: () => cfg, log });
+  // 语音转写常驻服务：启动时自拉起（模型常驻内存），失败不影响桥接（转写会回退按需加载）。
+  void moduleVoiceAsr.startServer().then((r) => {
+    if (r.ok && r.running === true) log('[asr] STT 服务已就绪');
+    else if (r.ok) log('[asr] STT 服务已在运行，直接复用');
+    else if (r.reason !== 'disabled') log(`[asr] STT 服务未启动（${r.reason}），语音转写退回按需加载`);
+  });
+  try { process.on('exit', () => { try { moduleVoiceAsr?.stopServer(); } catch {} }); } catch {}
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();

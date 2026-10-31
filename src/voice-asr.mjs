@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { resolveFfmpeg } from './voice-core.js';
 
@@ -38,6 +39,12 @@ export const ASR_DEFAULTS = Object.freeze({  enabled: true,
   computeType: 'int8',
   language: 'zh',
   cacheTtlMs: 30 * 60 * 1000,
+  // 常驻 STT 服务（桥接启动时自拉起；模型常驻内存，转写不用每条重载）。
+  // 默认关：只有 config.json 显式 serverEnabled=true 才起，避免测试/无配置环境误拉服务。
+  serverEnabled: false,
+  serverUrl: 'http://127.0.0.1:8766',
+  serverPython: 'E:/DeepSeeK/faster-whisper/.venv/Scripts/python.exe',
+  serverScript: 'E:/DeepSeeK/faster-whisper/stt_server.py',
 });
 
 function text(value, max = 4000) {
@@ -75,6 +82,10 @@ export function normalizeAsrConfig(input = {}, { root = process.cwd() } = {}) {
     computeType: String(src.computeType ?? ASR_DEFAULTS.computeType).trim() || ASR_DEFAULTS.computeType,
     language: String(src.language ?? ASR_DEFAULTS.language).trim() || ASR_DEFAULTS.language,
     cacheTtlMs: num(src.cacheTtlMs, ASR_DEFAULTS.cacheTtlMs, 0, 24 * 3600 * 1000),
+    serverEnabled: src.serverEnabled === true,
+    serverUrl: String(src.serverUrl ?? ASR_DEFAULTS.serverUrl).trim() || ASR_DEFAULTS.serverUrl,
+    serverPython: abs(src.serverPython, ASR_DEFAULTS.serverPython),
+    serverScript: abs(src.serverScript, ASR_DEFAULTS.serverScript),
   };
 }
 
@@ -228,6 +239,92 @@ export function createVoiceAsr({ getCfg, log = () => {} } = {}) {
     return body;
   }
 
+  // ── 常驻 STT 服务管理 ────────────────────────────────────────────────────
+  let serverChild = null;
+
+  function portOpen(host, port, timeoutMs = 600) {
+    return new Promise((resolve) => {
+      const s = net.connect({ host, port });
+      const done = (ok) => { s.destroy(); resolve(ok); };
+      s.setTimeout(timeoutMs);
+      s.once('connect', () => done(true));
+      s.once('timeout', () => done(false));
+      s.once('error', () => done(false));
+    });
+  }
+
+  async function serverHealth(timeoutMs = 3000) {
+    const { asr } = cfgNow();
+    try {
+      const url = new URL(asr.serverUrl);
+      const res = await fetch(`${url.origin}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      const j = await res.json().catch(() => ({}));
+      return j?.loaded === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 启动常驻 STT 服务（幂等：已在跑就直接复用）。 */
+  async function startServer() {
+    const { asr } = cfgNow();
+    if (!asr.enabled || !asr.serverEnabled) return { ok: false, reason: 'disabled' };
+    const url = new URL(asr.serverUrl);
+    if (await serverHealth()) return { ok: true, running: true };
+    if (serverChild) {
+      try { serverChild.kill(); } catch {}
+      serverChild = null;
+    }
+    if (!fs.existsSync(asr.serverPython) || !fs.existsSync(asr.serverScript)) {
+      return { ok: false, reason: 'missing-files', python: asr.serverPython, script: asr.serverScript };
+    }
+    try {
+      serverChild = spawn(asr.serverPython, ['-X', 'utf8', asr.serverScript,
+        '--host', url.hostname || '127.0.0.1', '--port', String(url.port || 8766),
+        '--model', asr.modelDir, '--device', asr.device, '--compute-type', asr.computeType], {
+        windowsHide: true, stdio: 'ignore',
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      });
+      serverChild.on('exit', () => { serverChild = null; });
+    } catch (error) {
+      return { ok: false, reason: 'spawn-failed', error: String(error?.message ?? error) };
+    }
+    // 模型加载要几秒：轮询 /health 直到 loaded（最多 ~60s）。
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      if (await serverHealth(2000)) return { ok: true, running: true };
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return { ok: false, reason: 'startup-timeout' };
+  }
+
+  function stopServer() {
+    if (serverChild) {
+      try { serverChild.kill(); } catch {}
+      serverChild = null;
+      return true;
+    }
+    return false;
+  }
+
+  /** 通过常驻服务转写（失败抛错，由调用方回退到按需 spawn）。 */
+  async function transcribeViaServer(buf, language, timeoutMs) {
+    const { asr } = cfgNow();
+    const url = new URL(asr.serverUrl);
+    const res = await fetch(`${url.origin}/transcribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ audio_base64: buf.toString('base64'), language }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (j?.error) throw new Error(j.error);
+    if (!res.ok) throw new Error(`STT HTTP ${res.status}`);
+    const got = text(j?.text);
+    if (!got) throw new Error('常驻服务没识别出文字');
+    return got;
+  }
+
   async function localTranscribe({ cfg, asr, record, timeoutMs }) {
     const vc = cfg?.socialV2?.voice ?? {};
     let ref = extractAudioRef(record);
@@ -244,6 +341,14 @@ export function createVoiceAsr({ getCfg, log = () => {} } = {}) {
       else buf = fs.readFileSync(ref.value);
       if (!buf?.length) throw new Error('语音文件为空');
       if (buf.length > asr.maxBytes) throw new Error(`音频过大（${buf.length} 字节）`);
+      // 优先走常驻服务（模型常驻内存）；服务没起/失败再退回按需 spawn（每次重载模型）。
+      if (asr.serverEnabled) {
+        try {
+          return await transcribeViaServer(buf, asr.language, Math.min(asr.localTimeoutMs, timeoutMs));
+        } catch (error) {
+          log(`[asr] 常驻 STT 服务不可用，回退按需转写：${String(error?.message ?? error).slice(0, 120)}`);
+        }
+      }
       const raw = path.join(tmp, 'in.bin');
       fs.writeFileSync(raw, buf);
       let audioFile;
@@ -326,6 +431,22 @@ export function createVoiceAsr({ getCfg, log = () => {} } = {}) {
     return task;
   }
 
+  async function serverStatus() {
+    const { asr } = cfgNow();
+    let url = null;
+    try { url = new URL(asr.serverUrl); } catch {}
+    const running = url ? await serverHealth(2000) : false;
+    return {
+      enabled: asr.serverEnabled,
+      url: asr.serverUrl,
+      running,
+      serverPython: asr.serverPython,
+      serverScript: asr.serverScript,
+      device: asr.device,
+      computeType: asr.computeType,
+    };
+  }
+
   function status() {
     const { asr } = cfgNow();
     return {
@@ -336,9 +457,11 @@ export function createVoiceAsr({ getCfg, log = () => {} } = {}) {
       scriptReady: (() => { try { return fs.existsSync(asr.script); } catch { return false; } })(),
       modelReady: (() => { try { return fs.existsSync(asr.modelDir); } catch { return false; } })(),
       modelDir: asr.modelDir,
+      serverEnabled: asr.serverEnabled,
+      serverUrl: asr.serverUrl,
       cached: cache.size,
     };
   }
 
-  return { transcribe, status };
+  return { transcribe, status, startServer, stopServer, serverStatus };
 }
