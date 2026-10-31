@@ -1,3 +1,33 @@
+<!-- ⚠️ 自用改动记录（维护备忘） -->
+
+## 对 SurfCore 的改动（自用）
+
+> 本仓库是自用 fork（`Sulley-naer/surfcore`，上游 `origin = Mieksido/surfcore`）。
+> 改动都在 `feat/voice-asr` 分支。
+
+### 新增：收到 QQ 语音自动转写
+
+- `src/voice-asr.mjs`（新增）：转写控制器 —— 先问 QQ `fetch_ptt_text`，失败走本地 faster-whisper；按 messageId 缓存、限并发、超时降级；管理常驻 STT 服务（自启动 / 复用 / 退出回收）。
+- `src/bridge.js`（改动）：`segmentsToText` 的 `record` 分支接入转写（输出 `[语音] 文本`）；`main()` 启动时自拉起 STT 服务。
+- `scripts/test-voice-asr.mjs`（新增）＋ `scripts/test-audit.mjs` / `scripts/audit-bridge-harness.mjs`（登记/接线）。
+- 运行时（不在 git 里）：`E:\DeepSeeK\faster-whisper\`（venv + small 模型 + `transcribe.py` + `stt_server.py`，常驻端口 8766）。
+- 配置：`config.json` 的 `socialV2.voice.asr`（gitignored，不随仓库走）。
+
+### 官方更新（main 有本地提交时，设置页「一键更新」的 `--ff-only` 不适用）
+
+```bash
+git checkout main
+git checkout -- plugins/surfcore/presets/qq-chat.patch.yml \
+                 plugins/surfcore/presets/qq-chat-v2.patch.yml \
+                 package-lock.json          # 清脏（preset 换行符/锁文件/未跟踪都算 dirty）
+git fetch origin && git merge origin/main   # 冲突主要在 src/bridge.js 与本 README
+node scripts/setup-dsh.mjs && npm install
+npm run test:audit
+# 重启 DSH（插件吃新代码）→ 重启桥接
+```
+
+---
+
 # SurfCore — 给 DSH agent 一个真实的身份：QQ × B站 × 桌宠
 
 **中文** | [English](README.en.md)
