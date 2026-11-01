@@ -3193,3 +3193,56 @@ delivered 17 次（¥1.80），未交付 31 次（¥0.89）；keyword 12 次 0 �
   客户端空 tone 也提交。
 - **修法**（0.8.4）：补 tone 路径/保存/读取；客户端只写有内容或原本有内容被清空的层。
 - **教训**：分层保存必须逐层显式分支；默认写 core 遇上新层就是“覆盖核心”。空值语义要进协议。
+
+---
+
+## #100（2026-11-01）DSH rc.5 启动即崩：desktop welcome: Web authentication failed（与 surfcore 无关）
+
+**现象**：双击 DSH 立刻弹「DeepSeek Harness is unavailable / desktop welcome: Web authentication failed」，
+点 Restart 或「Disable third-party plugins」都会再弹；崩溃日志 crash-*-host.log 全部同一签名：
+connectDesktopWelcome (lib/main.js) → Object.start。
+
+**根因（双因素，均在 rc.5 客户端）**
+- **A（401）**：connectDesktopWelcome 用 Chromium 
+et.fetch 跟随 303，**303 新铸的 Set-Cookie 没有回传**，
+  落点 401 → 抛错。用 undici 走同样流程则 200（cookie 本身有效）。
+- **B（431，本机实际命中）**：会话 jar 里 dsh-auth-* token **每次启动铸一枚、30 天有效、按 127.0.0.1 域名跨端口共享**，
+  只增不减；攒到几十枚后 Cookie 头超过 Node 默认 maxHeaderSize=16KB，任何请求都被 431。
+  更糟的是：**崩溃→点重启→又铸一枚**，越点越坏（自强化循环）。
+
+**为什么不是 surfcore**
+- 把 profile 还原成干净配置（bundles 不含 surfcore、cordis.patch.yml 为 []）后**同签名照崩**；
+  崩溃恢复流程自己摘掉过 surfcore，也照样崩。
+- 崩溃点在 bundle 加载完成之后的 Welcome 握手，与插件业务无数据依赖；
+  surfcore 的桥接是独立进程、不写 Electron cookie jar。
+
+**处置**（2026-11-01，豆包执行的 asar 修复，报告与 diff 在 C:\Users\Mieksido\Doubao\chats\2026-11-01\new-chat\）
+- P1：握手/跟随改用 undici，手动携带 303 的 Set-Cookie；
+- P2：种本次 token 前先清空同源旧 dsh-auth-*，只清认证 token；
+- 备份：D:\deepseek\resources\app.asar.doubao-backup-20261101；修复后连续两次启动零新增崩溃。
+
+**教训 / 下次注意**
+1. DSH 升级会覆盖 pp.asar，这两个补丁和本项目自己的会话护栏补丁**都会消失**；升级后先看崩溃日志签名，
+   再决定要不要重打（护栏补丁重打命令仍是 
+ode scripts/patch-dsh-session-guard.mjs --apply-in-place）。
+2. 「Disable third-party plugins」只摘 bundle、不清 cookie jar，对这类崩溃无效，还会把 surfcore 从 profile 里摘掉
+   （需要 
+ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
+3. 复现/取证工具在豆包工作区：epro-host-auth.mjs、measure-cookie.mjs、limit-test.mjs、welcome-debug.log。
+4. 频繁整体重启会加速 token 累积（每次启动一枚）；桥接/插件问题不需要重启整个 DSH。
+
+## DSH 升级后 QQ 会话没有 qq_* 工具（能收不能发）
+
+- **现象**：入站正常、模型读得到；回复发不出；模型工具表只有 bash/read/write，没有 qq_*。
+- **根因**：① 升级摘掉了 profile 的 3 条 MCP；② 旧会话工具表在创建时定死，即便 profile 修好也继续用坏会话；
+  ensureSession 只比本地 sessionPolicy，没查 DSH 侧真实 agentPreset。
+- **修法**（0.8.5）：src/dsh-health.js 扫 profile MCP，缺了写 L2 并给 setup-dsh.mjs；
+  启动审计会话 agentPreset，不一致就重建（L1 列出 key）。
+- **教训**：会话创建后工具表定死；升级 DSH 后先查 profile MCP + 真实 preset，别只看本地映射。
+
+## 让 QQ 里的模型去跑 setup-dsh.mjs（它没有本地工具）
+
+- **现象**：模型被建议跑 `node scripts/setup-dsh.mjs`，但被桥接守卫以“ops_bash 不在 QQ 桥接白名单”拒绝。
+- **根因**：QQ 会话按设计没有本地工具；而且 setup 脚本只写 profile、不会重启 DSH。
+- **修法**（0.8.5）：L2 建议明确写“宿主机终端执行，模型跑不了；脚本不会重启 DSH；跑完完全退出重开”。
+- **教训**：给模型的建议先过“它有没有执行权限”这一关；没有就写给操作者。

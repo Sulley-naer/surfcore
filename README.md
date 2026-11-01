@@ -3,8 +3,8 @@
 ## 对 SurfCore 的改动（自用）
 
 > 本仓库是自用 fork（`Sulley-naer/surfcore`，上游 `origin = Mieksido/surfcore`）。
-> 自用改动在 `feat/voice-asr` 分支（语音转写 + 发图），迁移工具在 `feat/portable` 分支（基于 `feat/voice-asr`）。
-> **暂不合并进 `main`**（合进后设置页「一键更新」的 `--ff-only` 会永久失效），更新上游走手动 merge。
+> 自用改动在 `feat/voice-asr` 分支（语音转写 + 发图 + 受控命令 / 后台任务 / 日程），迁移工具在 `feat/portable` 分支（基于 `feat/voice-asr`）。
+> 上游基线：已合并到 **v0.8.6**（2026-11-01）。**暂不合并进 `main`**（合进后设置页「一键更新」的 `--ff-only` 会永久失效），更新上游走手动 `git fetch origin && git merge origin/main`，`main` 保持干净。
 
 ### 新增：收到 QQ 语音自动转写
 
@@ -129,7 +129,7 @@ npm run test:audit
 
 | | |
 | --- | --- |
-| 版本 | `0.8.4` |
+| 版本 | `0.8.6` |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
 | 平台 | Windows（沙箱 ACL / SnowLuma / 启动脚本都与它绑定） |
 | 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |

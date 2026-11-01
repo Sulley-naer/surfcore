@@ -116,6 +116,7 @@ import { DEFAULT_GROUP_POLICY, normalizeGroupPolicy, groupTier, shouldSkipTrigge
 import { buildContextSnapshot, DEFAULT_SNAPSHOT_CAPS } from './context-snapshot.js';
 import { planClose } from './action-planner.js';
 import { dedupeSessionMappings } from './session-map.js';
+import { checkProfileMcp, presetMismatch } from './dsh-health.js';
 import { createContextTelemetry } from './context-telemetry.js';
 import { createBiliDynamicsSync } from './bili-dynamics.js';
 import { createBiliShareScheduler } from './bili-share-scheduler.js';
@@ -3858,6 +3859,7 @@ async function main() {
           log('桥接模式已确定为 reserved2，恢复有限睡眠定时器');
           // 2026-10-31：重启前积压的 unread 不会触发事件，必须显式补唤醒；白名单也要先纠正。
           reconcileAllowlist('dsh-ready');
+          void auditDshHealth('dsh-ready');
           wakeBacklogConversations('boot');
         }
         try { await flushQueue(); } catch (error) { log('补投队列异常:', error?.message ?? error); }
@@ -3993,6 +3995,65 @@ async function main() {
    * 2026-10-31 实测：allow.private 里只有机器人自己的 UIN → 主人私信被当未授权忽略。
    * 这里在启动/登录/DSH 就绪时纠正一次，并落盘 + 记事件，避免用户被静默丢消息。
    */
+  /**
+   * DSH 升级后的健康审计（2026-11-01 用户反馈：升级后 QQ 会话没有 qq_* 工具）。
+   *   ① profile 的 3 条 MCP 被摘 → 新会话也没有 qq_*（提示重跑 setup-dsh.mjs + 重启 DSH）；
+   *   ② 旧会话的 preset 与当前配置不一致 → 工具表在创建时定死，必须重建。
+   * 只审计“有记录 preset 且与期望不同”的会话，避免误删老会话。
+   */
+  async function auditDshHealth(reason = 'dsh-ready') {
+    try {
+      const home = process.env.USERPROFILE || os.homedir();
+      const check = checkProfileMcp(home);
+      if (check.checked > 0 && !check.ok) {
+        const broken = check.broken[0];
+        gateEvents.record({
+          gate: 'dsh', kind: 'fault', event: 'dsh-profile-mcp-missing', action: 'blocked',
+          level: 'L2',
+          reason: { code: 'DSH_PROFILE_MCP_MISSING', message: `profile ${broken?.profile ?? '?'} 缺少 MCP：${(broken?.missing ?? []).join(', ')}` },
+          impact: 'DSH 升级可能摘掉了 surfcore 的 MCP 注册：新会话拿不到 qq_* 工具，机器人收到消息也发不出来。',
+          recommendation: '请在**宿主机终端**运行 node scripts/setup-dsh.mjs <profile>（QQ 会话里的模型没有本地工具权限，跑不了这条）；脚本本身不会重启 DSH，跑完需完全退出并重开 DSH；旧会话可能仍需在控制台重置一次。',
+          confidence: 'confirmed',
+          dedupeKey: 'dsh-profile-mcp-missing',
+          evidence: { manualOnly: true, checked: check.checked, broken: check.broken.map((b) => b.profile) },
+        });
+        log(`⚠️ DSH profile 缺 MCP（${broken?.profile ?? '?'}）：${(broken?.missing ?? []).join(', ')}；qq_* 工具可能不可用，请重跑 setup-dsh.mjs 并重启 DSH`);
+      }
+    } catch (error) {
+      log(`[dsh-health] profile 检查失败（继续）：${error?.message ?? error}`);
+    }
+    try {
+      const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+      const byId = new Map((list.items ?? []).map((item) => [item.sessionId, item]));
+      let rebuilt = 0;
+      const details = [];
+      for (const [key, sid] of Object.entries(state.sessions ?? {})) {
+        const item = byId.get(sid);
+        if (!item) continue;
+        const expected = modePreset(key, currentMode, cfg);
+        if (!presetMismatch(expected, item.agentPreset)) continue;
+        details.push({ key, expected: expected ?? '', actual: item.agentPreset });
+        retireSession(key);
+        rebuilt += 1;
+      }
+      if (rebuilt > 0) {
+        gateEvents.record({
+          gate: 'dsh', kind: 'fault', event: 'session-preset-rebuilt', action: 'blocked',
+          level: 'L1',
+          reason: { code: 'SESSION_PRESET_MISMATCH', message: `${rebuilt} 个会话的 preset 与当前配置不一致，已重建` },
+          impact: '旧会话的工具表在创建时定死；重建后会按当前 preset 重新拉 qq_* 工具（上下文会重新开始）。',
+          recommendation: '无需操作；若仍没有 qq_* 工具，请在宿主机终端运行 setup-dsh.mjs（QQ 内模型无法执行本地命令），再完全重启 DSH。',
+          confidence: 'confirmed',
+          dedupeKey: 'session-preset-rebuilt',
+          evidence: { rebuilt, details: details.slice(0, 10) },
+        });
+        log(`[dsh-health] 已重建 ${rebuilt} 个 preset 不一致的会话：${details.map((d) => d.key).join(', ')}`);
+      }
+    } catch (error) {
+      log(`[dsh-health] 会话 preset 审计失败（继续）：${error?.message ?? error}`);
+    }
+  }
+
   function reconcileAllowlist(reason = 'boot') {
     try {
       const { allow, changed, warnings } = normalizeAllowlist({

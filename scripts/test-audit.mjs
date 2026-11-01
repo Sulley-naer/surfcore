@@ -177,6 +177,8 @@ const tests = [
   // 称呼按人归属（2026-10-31 主人被叫成对象的称呼）。
   'test-callname.mjs',
   'test-allowlist.mjs',
+  // DSH 升级后 profile MCP / 会话 preset 审计（2026-11-01 升级后没有 qq_* 工具）。
+  'test-dsh-health.mjs',
   'test-voice-diagnostics.mjs',
   'test-release-manifest.mjs',
   'test-voice-gates.mjs',
