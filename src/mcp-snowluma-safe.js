@@ -1256,7 +1256,7 @@ if (cfg.socialV2?.tools?.runCode !== false) {
     {
       key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      command: z.string().describe('要执行的单条命令，如 "git status"、"ls"、"cat README.md"'),
+      command: z.string().describe('要执行的单条命令，如 "git status"、"dir"、"type README.md"（Windows cmd 环境，没有 ls/cat）'),
     },
     async ({ key, token, command }) => {
       try {

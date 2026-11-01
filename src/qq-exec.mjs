@@ -192,6 +192,12 @@ export function runCommand(command, {
         combined = combined.slice(0, maxOutputChars) + `\n…（已截断，原始约 ${rawLen} 字符）`;
       }
 
+      // 正常退出但码非 0（如 cmd 里敲了不认识的命令 → 9009）：error 为 null 会让
+      // MCP 侧报「ok:false（未说明原因）」，她只能盲目重试。这里补一句可读原因。
+      if (!errMsg && code !== 0) {
+        errMsg = `命令退出码 ${code}（非 0），正文见 output`;
+      }
+
       resolve({
         ok: code === 0,
         command: cmd,
