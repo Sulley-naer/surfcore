@@ -12120,7 +12120,14 @@ async function main() {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
+    // Windows 上 child.kill() 只杀 cmd.exe，孙进程（ping/py 等）会带着 stdio 管道继续跑，
+    // 'close' 永远不触发 → 任务永远 running。必须 taskkill /T 杀整棵进程树。
+    let timedOutFlag = false;
+    const timer = setTimeout(() => {
+      timedOutFlag = true;
+      try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); }
+      catch (error) { log(`[任务] 超时杀进程失败: ${error?.message ?? error}`); }
+    }, timeoutMs);
     child.stdout?.on('data', write);
     child.stderr?.on('data', write);
     child.on('error', (error) => {
@@ -12132,7 +12139,7 @@ async function main() {
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      const timedOut = code === null;
+      const timedOut = timedOutFlag;
       write(`\n--- ${new Date().toISOString()} 结束 code=${code ?? 'null'}${timedOut ? '（超时）' : ''} ---\n`);
       try { if (fd >= 0) fs.closeSync(fd); } catch {}
       fd = -1;
