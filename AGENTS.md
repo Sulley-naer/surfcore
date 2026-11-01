@@ -101,7 +101,8 @@
 
 ## 2. 环境事实（省得重新摸一遍）
 
-- 本机 DSH：`<DSH 安装目录>`，版本 `0.2.1-rc.2`；用户数据 `~/.dsh`。
+- 本机 DSH：`<DSH 安装目录>`，版本 `0.2.1-rc.5`（2026-11-01 升级；rc.5 有 welcome 握手 401/431 缺陷，已用豆包的
+  `app.asar` 两处补丁绕过，见 PITFALLS #100）；用户数据 `~/.dsh`。
 - Web GUI / 网关：**端口会漂移**（见过 3080 / 48994 / 57981）。用 `discoverDshBaseUrl()` 或 `state/dsh-port.json`，**别硬编码**。
 - 桥接控制台：`http://127.0.0.1:3100`（需要令牌；`consoleToken`）。
 - SnowLuma：第三方专有运行时，**不随仓库分发、不打包**；本程序只探测、不部署（EULA §5.4）。
@@ -119,4 +120,8 @@
   处置：坏文件整目录隔离 + 给 `app.asar` 打了字节级护栏补丁（`scripts/patch-dsh-session-guard.mjs`，坏文件只跳过不炸服务）。
   ⚠️ **DSH 一升级就会覆盖 `app.asar`，补丁消失** → 升级后第一件事 `npm run guard:check`。
 - 旧工作区清理逻辑已从「`fs.rmSync` 硬删除」改成「rename 到 `~/.dsh/_quarantine/`」，可回滚。
+- **DSH 升级后必查（升级会覆盖 `app.asar`，所有本地补丁一起消失）**：
+  1) 启动是否弹 `desktop welcome: Web authentication failed`（rc.5 缺陷，见 PITFALLS #100）；
+  2) `npm run guard:check` 是否变 `unpatched`（会话护栏补丁没了）；
+  3) profile 里 surfcore bundle / 3 条 MCP 是否被摘（`node scripts/setup-dsh.mjs desktop` 可恢复）。
 - 详细踩坑见 [`docs/PITFALLS.md`](docs/PITFALLS.md)；风险台账见 [`docs/RISK_REGISTER.md`](docs/RISK_REGISTER.md)。

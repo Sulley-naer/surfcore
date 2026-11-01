@@ -82,7 +82,7 @@ npm run test:audit
 
 | | |
 | --- | --- |
-| 版本 | `0.8.4` |
+| 版本 | `0.8.6` |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
 | 平台 | Windows（沙箱 ACL / SnowLuma / 启动脚本都与它绑定） |
 | 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |

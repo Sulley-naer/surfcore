@@ -43,6 +43,7 @@ import * as wakePolicy from '../src/wake-policy.js';
 import * as groupPolicy from '../src/group-policy.js';
 import * as actionPlanner from '../src/action-planner.js';
 import * as sessionMap from '../src/session-map.js';
+import * as dshHealth from '../src/dsh-health.js';
 import * as contextTelemetry from '../src/context-telemetry.js';
 import * as memoryCard from '../src/memory-card.js';
 import * as characterStore from '../src/character-persona.js';
@@ -264,6 +265,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...allowlist,
     ...callname,
     ...personaIdentity,
+    ...dshHealth,
     synthesizeToFile,
     ...tokenBudget,
     ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
