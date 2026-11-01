@@ -49,6 +49,11 @@ const add = (state, title, command, extra = {}) =>
   assert.equal(r1.task.timeoutMs, cfg.defaultTimeoutMs, '默认超时');
   const r2 = add(state, '跑测试', 'node scripts/test-audit.mjs', { timeoutMs: 999999999 });
   assert.equal(r2.task.timeoutMs, cfg.maxTimeoutMs, '超时上限夹取');
+  // 回归：MCP 工具不传 timeoutMs 时曾把 null 传进来，Number(null)=0 被夹成 60s 而不是默认 30 分钟。
+  const r3 = add(state, '不传超时', 'ping -n 180 127.0.0.1', { timeoutMs: null });
+  assert.equal(r3.task.timeoutMs, cfg.defaultTimeoutMs, 'null 超时按默认值');
+  const r4 = createTask(state, { title: 'undefined 超时', command: 'ping -n 3 127.0.0.1', timeoutMs: undefined, config: cfg });
+  assert.equal(r4.task.timeoutMs, cfg.defaultTimeoutMs, 'undefined 超时按默认值');
   assert.equal(add(state, '', 'ls').ok, false, '空标题拒');
   assert.equal(add(state, 'x', '   ').ok, false, '空命令拒');
   assert.equal(add(state, '', 'ls').reason, 'invalid-title', '空标题 reason');

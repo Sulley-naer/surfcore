@@ -1252,7 +1252,7 @@ if (cfg.socialV2?.tools?.sendImage !== false) {
 if (cfg.socialV2?.tools?.runCode !== false) {
   server.tool(
     'qq_run_code',
-    '在管理员本机执行一条受控命令（只读为主），返回 stdout/stderr。仅管理员私聊可用；命令走首词白名单 + 注入黑名单，写操作/删除/改配置会被拒绝。适合「帮我看看 git 状态 / 这个文件内容 / 端口占用」这类只读任务。',
+    '在管理员本机执行命令并返回输出（约 90 秒超时，只适合短命令；耗时任务用 qq_task_run 挂后台）。仅管理员私聊可用；黑名单模式：默认放行任意命令，只拦破坏性指令，可读写文件、改配置。Windows cmd 没有 ls/cat，用 dir/type。',
     {
       key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -1289,7 +1289,7 @@ if (cfg.socialV2?.tools?.taskRun !== false) {
       try {
         const data = await agentApi('/api/socialV2/task-run', {
           method: 'POST',
-          body: JSON.stringify({ key, title: String(title), command: String(command), timeoutMs: timeoutMs ?? null }),
+          body: JSON.stringify({ key, title: String(title), command: String(command), ...(Number(timeoutMs) > 0 ? { timeoutMs: Number(timeoutMs) } : {}) }),
           headers: { 'x-agent-token': token },
           timeoutMs: 90000
         });
