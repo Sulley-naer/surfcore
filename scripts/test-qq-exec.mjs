@@ -155,4 +155,19 @@ import { normalizeExecConfig, policyError, runCommand } from '../src/qq-exec.mjs
   assert.ok(masked.output.includes('.'), '脱敏后应出现相对占位 .');
 }
 
+// ── 8. 搜索类命令「未命中」不算失败（findstr/grep 退出码 1 是正常语义）────
+{
+  // 通过管道喂 stdin，不依赖文件是否存在：没匹配 → findstr 退出码 1 + stderr 为空。
+  const miss = await runCommand('echo hello | findstr /c:"__qq_exec_no_such_token__"', { cwd: process.cwd() });
+  assert.equal(miss.code, 1, 'findstr 未命中退出码应为 1');
+  assert.equal(miss.ok, true, '搜索未命中应视为成功（不是失败）');
+  assert.equal(miss.error, null, '搜索未命中不应产生 error');
+  assert.match(miss.output, /没有匹配到内容/, 'output 应说明未匹配、不要重试');
+
+  // 对照：真正不存在的命令仍是失败，并带可读原因（不会被未命中语义吞掉）。
+  const bad = await runCommand('__qq_exec_no_such_command__', { cwd: process.cwd() });
+  assert.equal(bad.ok, false, '不存在的命令应失败');
+  assert.match(bad.error, /退出码/, '应给出可读错误原因');
+}
+
 console.log('✅ test-qq-exec 通过');

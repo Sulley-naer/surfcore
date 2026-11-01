@@ -1255,7 +1255,7 @@ if (cfg.socialV2?.tools?.sendImage !== false) {
 if (cfg.socialV2?.tools?.runCode !== false) {
   server.tool(
     'qq_run_code',
-    '在管理员本机执行命令并返回输出（约 90 秒超时，只适合短命令；耗时任务用 qq_task_run 挂后台）。仅管理员私聊可用；黑名单模式：默认放行任意命令，只拦破坏性指令，可读写文件、改配置。Windows cmd 没有 ls/cat，用 dir/type。',
+    '在管理员本机执行命令并返回输出（约 90 秒超时，只适合短命令；耗时任务用 qq_task_run 挂后台）。仅管理员私聊可用；黑名单模式：默认放行任意命令，只拦破坏性指令，可读写文件、改配置。Windows cmd 没有 ls/cat，用 dir/type。注意：findstr/grep 没搜到内容时退出码是 1，属正常「未命中」——工具会把它标成成功并在 output 里说明，不要重复重试同一条命令（换查询词或直接读代码）。',
     {
       key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
       token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
