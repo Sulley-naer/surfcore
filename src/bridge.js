@@ -49,6 +49,16 @@ import {
   reportBlock,
   summarize as summarizeOwnerTasks,
 } from './owner-tasks.mjs';
+import {
+  normalizeScheduleConfig,
+  normalizeScheduleState,
+  addSchedule,
+  dueSchedules,
+  fireSchedule,
+  cancelSchedule,
+  scheduleBlock,
+  summarize as summarizeSchedules,
+} from './schedules.mjs';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
@@ -1146,6 +1156,8 @@ function loadConfig() {
   cfg.socialV2.exec = normalizeExecConfig(cfg.socialV2.exec ?? {});
   // socialV2.ownerTasks：后台任务队列（qq_task_run 等），行为参数 + 开关。
   cfg.socialV2.ownerTasks = normalizeTaskConfig(cfg.socialV2.ownerTasks ?? {});
+  // socialV2.schedules：日程/定时器（qq_schedule_*），行为参数 + 开关。
+  cfg.socialV2.schedules = normalizeScheduleConfig(cfg.socialV2.schedules ?? {});
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
@@ -1542,6 +1554,15 @@ function saveOwnerTaskState() {
 // 唤醒 prompt 注入过的「待汇报」任务 id 快照：她给主人私聊发出消息即视为已汇报。
 let lastTaskReportIds = [];
 let lastTaskReportAt = 0;
+
+// —— owner 日程/定时器（qq_schedule_*）：状态文件。单写者：桥接；插件只读。 ——
+const SCHEDULES_FILE = path.join(STATE_DIR, 'schedules.json');
+let scheduleState = normalizeScheduleState(readJsonSafe(SCHEDULES_FILE, null));
+function saveScheduleState() {
+  try { atomicWriteJson(SCHEDULES_FILE, scheduleState); } catch (error) { log('[日程] 状态写盘失败:', error?.message ?? error); }
+}
+// 最近刚触发的日程（唤醒 prompt 注入「到点了，先做这件事」用），窗口见 fireWindowMs。
+let lastScheduleFires = [];
 const auditOnceAt = new Map();
 function auditOnce(scope, key, ms = 60_000) {
   const id = `${scope}|${key}`;
@@ -3823,6 +3844,10 @@ async function main() {
           drainOwnerTasks();
           setTimeout(() => scheduleOwnerTaskNotify(), 30_000);
         } catch (error) { log(`[任务] 启动失败：${error?.message ?? error}`); }
+        // owner 日程：每 30s 检查一次到期（到点唤醒她自己执行）。
+        try {
+          setInterval(() => { try { checkSchedules(); } catch (error) { log(`[日程] 检查失败：${error?.message ?? error}`); } }, 30_000);
+        } catch (error) { log(`[日程] 定时器启动失败：${error?.message ?? error}`); }
         if (currentMode === 'reserved2') {
           // 首次确定模式为 reserved2 后再恢复持久化的有限睡眠定时器，
           // 避免在 initial chat 模式下设置定时器导致 timeout 唤醒被模式守卫吞掉。
@@ -7682,6 +7707,76 @@ async function main() {
           ownerAudit.append('qq_task_cancel', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { taskId, event: 'cancelled' }, ref: key });
           log(`[任务] 取消排队: ${taskId}`);
           sendJson({ ok: true, task: cancelled.task });
+          return;
+        }
+
+        // —— owner 日程/定时器：安排 / 查看 / 取消 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/schedule-add') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const title = String(body.title ?? '').trim();
+          const time = String(body.time ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (!title) { sendJson({ ok: false, error: 'title 不能为空' }, 400); return; }
+          if (!time) { sendJson({ ok: false, error: 'time 不能为空（HH:mm 或 HH:mm:ss）' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('scheduleAdd')) { sendJson({ ok: false, error: '工具未启用：qq_schedule_add' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          if (cfg.socialV2?.schedules?.enabled === false) { sendJson({ ok: false, error: '日程已关闭（socialV2.schedules.enabled=false）' }, 403); return; }
+          const created = addSchedule(scheduleState, {
+            title,
+            description: String(body.description ?? '').trim(),
+            time,
+            repeat: String(body.repeat ?? 'none').trim(),
+            config: cfg.socialV2.schedules,
+          });
+          if (!created.ok) { sendJson({ ok: false, error: created.reason }, 400); return; }
+          saveScheduleState();
+          ownerAudit.append('qq_schedule_add', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { scheduleId: created.item.id, title, time, repeat: created.item.repeat }, ref: key });
+          log(`[日程] 新增: #${created.item.seq}「${title}」${new Date(created.item.dueAt).toLocaleString()}${created.item.repeat === 'daily' ? '（每天）' : ''}`);
+          sendJson({ ok: true, schedule: created.item });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/schedules') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('scheduleList')) { sendJson({ ok: false, error: '工具未启用：qq_schedule_list' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          sendJson({ ok: true, ...summarizeSchedules(scheduleState) });
+          return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/schedule-cancel') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const scheduleId = String(body.scheduleId ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (!scheduleId) { sendJson({ ok: false, error: 'scheduleId 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('scheduleCancel')) { sendJson({ ok: false, error: '工具未启用：qq_schedule_cancel' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          if (cfg.socialV2?.schedules?.enabled === false) { sendJson({ ok: false, error: '日程已关闭（socialV2.schedules.enabled=false）' }, 403); return; }
+          const cancelled = cancelSchedule(scheduleState, scheduleId);
+          if (!cancelled.ok) {
+            sendJson({ ok: false, error: cancelled.reason === 'already-cancelled' ? '这条日程已经取消过了' : `取消失败：${cancelled.reason}` }, 400);
+            return;
+          }
+          saveScheduleState();
+          ownerAudit.append('qq_schedule_cancel', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { scheduleId, event: 'cancelled' }, ref: key });
+          log(`[日程] 取消: ${scheduleId}`);
+          sendJson({ ok: true, schedule: cancelled.item });
           return;
         }
 
@@ -12174,6 +12269,31 @@ async function main() {
     void runPurposeOnce({ force: true }).catch((error) => log('[任务] 主动通知失败:', error?.message ?? error));
   }
 
+  // ===== owner 日程/定时器：到点检查与触发 =====
+
+  /** 到点检查：到期日程标触发（daily 推进 / 一次性 done），然后唤醒她自己执行。 */
+  function checkSchedules(now = Date.now()) {
+    if (cfg.socialV2?.schedules?.enabled === false) return;
+    const due = dueSchedules(scheduleState, now);
+    if (!due.length) return;
+    const ownerKey = `private:${String(cfg.ownerQQ ?? '')}`;
+    let firedCount = 0;
+    for (const item of due) {
+      const fired = fireSchedule(scheduleState, item.id, now);
+      if (!fired.ok) continue;
+      firedCount += 1;
+      lastScheduleFires.push({ seq: item.seq, title: item.title, description: item.description, at: now });
+      log(`[日程] 触发: #${item.seq}「${item.title}」${item.repeat === 'daily' ? '（每天）' : ''}`);
+      ownerAudit.append('qq_schedule_fire', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'background', result: { scheduleId: item.id, title: item.title } });
+    }
+    if (!firedCount) return;
+    saveScheduleState();
+    const keepMs = Number(cfg.socialV2?.schedules?.fireWindowMs) || 5 * 60 * 1000;
+    lastScheduleFires = lastScheduleFires.filter((f) => now - Number(f.at) < keepMs);
+    // 唤醒她自己来执行：prompt 里带【日程】块（buildWakePromptV2 的 reason='schedule' 分支）。
+    deliverPrompt(ownerKey, '', { wakeReason: 'schedule' }).catch((error) => log(`[日程] 唤醒失败: ${error?.message ?? error}`));
+  }
+
   /** 她真的往主人私聊发了消息（所有发送端点最终都会记到这里）。 */
   function notePurposeOutbound(key, messages) {
     if (!purposeRun || purposeRun.key !== key) return;
@@ -14002,6 +14122,15 @@ async function main() {
     }
     if (reason === 'timeout') {
       return `${base}【唤醒】${key}\n原因：你设置的有限潜水时间已到；在你规定的时间内没有任何一项条件被触发，只是因为时间到了所以你被唤醒。\n你可以查看消息，或继续设置新的唤醒条件。`;
+    }
+    if (reason === 'schedule') {
+      const block = scheduleBlock(scheduleState, {
+        maxChars: Number(cfg.socialV2?.schedules?.summaryMaxChars) || 500,
+        recentFires: lastScheduleFires,
+        now: Date.now(),
+        fireWindowMs: Number(cfg.socialV2?.schedules?.fireWindowMs) || 5 * 60 * 1000,
+      });
+      return `${base}【日程提醒】${key}\n${block ? `${block}\n\n` : ''}原因：你之前安排的日程到点了。按日程内容去做：需要查/写就调工具（比如 web_search、qq_send_message），做完把结果（比如链接）发给主人；不需要惊动其他人。`;
     }
     if (reason === 'replyCheck') {
       return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n先看有没有人回。如果没人回，这段对话可能已经自然结束：不用硬补一句，也不用为了收尾去等 5 分钟沉睡前观察——直接判断，还有想说的就回，没有就 qq_close_conversation 自然收尾（不是潜水，唤醒配置不变）。如果有人回你，先看【对话收尾判断】再决定接不接；需要确认对方是否说完，用 qq_wait_for_messages(purpose="reply")。`;
