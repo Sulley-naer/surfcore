@@ -10149,6 +10149,8 @@ async function main() {
   // 它同时支持 text/image 输入，取代已下线的 deepseek-v4-flash-vision-exp。
   const modelAppliedSessions = new Map(); // sessionId -> 已应用的 modelSelectionEpoch
   // 返回 'applied' | 'not-found' | 'failed'。
+  // 'applied' 也覆盖「配置的 provider 在 DSH 侧没有可用模型」这种情况：会话会退回
+  // DSH 的默认模型（agent-default-model）正常收发，不必每条消息都失败重试刷日志。
   // 'not-found' 表示 DSH 侧会话已经不存在（DSH 重启、异常退出、归档竞态），
   // 本地映射已失效，调用方必须退役重建，否则每条消息都会对着一个不存在的会话重试。
   async function ensureChatModel(sessionId) {
@@ -10165,7 +10167,17 @@ async function main() {
         return 'applied';
       } catch (error) {
         lastError = error;
-        log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${error?.message ?? error}`);
+        const msg = String(error?.message ?? error);
+        log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${msg}`);
+        // session/model-unavailable = config.dsh.provider 在 DSH 侧没有可用模型。
+        // 这是配置问题，不是瞬时故障：重试只会让每条消息都刷两条错误日志。
+        // 会话本身会用 DSH 的默认模型（agent-default-model）正常收发，所以记下 epoch
+        // 直接放行，并提示把 dsh.provider 改成实际可用的 provider。
+        if (/model-unavailable/i.test(msg)) {
+          modelAppliedSessions.set(sessionId, modelSelectionEpoch);
+          log(`[模型] ${provider}/${model} 在 DSH 侧无可用模型，本会话改用 DSH 默认模型；请把 config.json 的 dsh.provider 改成实际可用的 provider（如 deepseek-account）。`);
+          return 'applied';
+        }
         if (attempt < 2) await sleep(1000);
       }
     }
