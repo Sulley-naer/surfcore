@@ -6325,12 +6325,12 @@ async function main() {
           if (next.mode === 'diving' && !('anyMessage' in inputTriggers)) {
             next.triggers.anyMessage = false;
           }
-          if (next.mode === 'active') {
+          if (next.mode === 'active' && !(typeof input.sleepUntil === 'string' && input.sleepUntil.trim()) && !Number.isFinite(Number(input.sleepMs))) {
             next.infinite = true;
             next.sleepUntil = null;
             next.triggers.anyMessage = true;
           }
-          if (typeof input.infinite === 'boolean' && next.mode !== 'active') next.infinite = input.infinite;
+          if (typeof input.infinite === 'boolean' && next.mode !== 'active') next.infinite = input.infinite; if (next.mode === 'active' && (input.sleepUntil || Number.isFinite(Number(input.sleepMs)))) next.infinite = false;
           if (next.infinite) {
             next.sleepUntil = null;
           } else if (input.sleepUntil) {
