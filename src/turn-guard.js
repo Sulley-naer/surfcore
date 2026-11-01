@@ -17,7 +17,7 @@ export const DEFAULT_TURN_GUARD = Object.freeze({
 // 这类错误自带下一步（比如 qq_close_conversation 会让你先发消息），停轮只会让用户困惑。
 // 2026-10-31 实测：同一会话里 qq_close_conversation 连续 3 次「收尾失败…建议 qq_send_message」
 // 触发 L3 停轮；实际是模型没听建议，不是通道故障。
-const EXPECTED_REJECTION_RE = /(收尾失败|不能收尾|还没到收尾|请先|不在允许|未授权|白名单|审计|令牌|参数|不能为空|格式|频率|限流|已禁用|未开启|没有配|not allowed|permission|invalid)/i;
+const EXPECTED_REJECTION_RE = /(收尾失败|不能收尾|还没到收尾|请先|不在允许|未授权|白名单|审计|令牌|参数|不能为空|格式|频率|限流|已禁用|未开启|没有配|未匹配|没有匹配|未找到|not allowed|permission|invalid)/i;
 
 /** 是不是「预期内的业务拒绝」：此类错误不计入重复错误止血。 */
 export function isExpectedToolError(text) {

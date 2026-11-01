@@ -128,6 +128,20 @@ export function policyError(command, { mode = 'blacklist' } = {}) {
   return null;
 }
 
+// 搜索类命令：没搜到内容时退出码 1 是正常语义（不是失败）。findstr/grep/rg/find 都一样。
+// 2026-11-02 实测：她重启后验收功能用 findstr 搜代码，查不到就返回 1；把 1 当错误会让模型
+// 连续重试到触发 L3 回合止血（TURN_REPEATED_TOOL_ERROR）。
+export const SEARCH_COMMANDS = new Set(['findstr', 'grep', 'rg', 'find']);
+
+function isSearchCommand(command) {
+  // cmd 的退出码取最后一个连接命令/管道段：`cd x && findstr ...`、`echo h | findstr ...`
+  // 都以最后一段的首词为准。
+  const raw = String(command ?? '').trim();
+  const last = raw.split(/\|\||&&|\||&|;/).pop().trim();
+  const m = /^(\S+)/.exec(last);
+  return Boolean(m) && SEARCH_COMMANDS.has(m[1].toLowerCase().replace(/\.exe$/i, ''));
+}
+
 /** 把输出里出现的根路径（Win/POSIX 两种写法）替换成相对占位 `.`。 */
 function maskPaths(text, root) {
   if (!root || !text) return text;
@@ -186,7 +200,16 @@ export function runCommand(command, {
         }
       }
 
+      // 搜索类命令「没找到」= 退出码 1，是正常结果不是失败（stderr 为空才算未命中；
+      // 「找不到文件」这类 stderr 非空的仍按失败处理）。
+      const searchMiss = code === 1 && isSearchCommand(cmd) && !err.trim();
+      let ok = code === 0;
+      if (searchMiss) ok = true;
+
       let combined = (err.trim() ? `[stderr]\n${err.trim()}\n` : '') + out;
+      if (searchMiss) {
+        combined += '\n（没有匹配到内容：findstr/grep 退出码 1 属正常「未命中」，不是失败，不要重试这条命令；换查询词或直接看代码。）';
+      }
       const truncated = combined.length > maxOutputChars;
       if (truncated) {
         combined = combined.slice(0, maxOutputChars) + `\n…（已截断，原始约 ${rawLen} 字符）`;
@@ -194,12 +217,12 @@ export function runCommand(command, {
 
       // 正常退出但码非 0（如 cmd 里敲了不认识的命令 → 9009）：error 为 null 会让
       // MCP 侧报「ok:false（未说明原因）」，她只能盲目重试。这里补一句可读原因。
-      if (!errMsg && code !== 0) {
+      if (!errMsg && !searchMiss && code !== 0) {
         errMsg = `命令退出码 ${code}（非 0），正文见 output`;
       }
 
       resolve({
-        ok: code === 0,
+        ok,
         command: cmd,
         code,
         stdout: out,
