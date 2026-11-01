@@ -4,6 +4,8 @@
 
 > 本仓库是自用 fork（`Sulley-naer/surfcore`，上游 `origin = Mieksido/surfcore`）。
 > 改动都在 `feat/voice-asr` 分支。
+> 上游基线：已合并到 **v0.8.6**（2026-11-01）。`main` 保持干净（设置页「一键更新」仍可用），
+> 以后合并上游用 `git fetch origin && git merge origin/main`，不要把自用改动合进 `main`。
 
 ### 新增：收到 QQ 语音自动转写
 
