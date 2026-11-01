@@ -46,6 +46,17 @@
 - 配置：`config.json` 的 `socialV2.ownerTasks`（`enabled/maxActive/maxQueue/defaultTimeoutMs/maxTimeoutMs/maxHistory/summaryMaxChars`）与 `socialV2.tools.taskRun / taskStatus / taskCancel`（默认开）。
 - 生效条件：同上（重启桥接 + 重启 DSH + `setup-dsh`）。
 
+### 新增：owner 日程 / 定时器（`qq_schedule_add` / `qq_schedule_list` / `qq_schedule_cancel`）
+
+让她能把一件事排到某个时间点（「晚上 8 点去刷两条 B 站，等你下班把链接甩给你」）：到点桥接唤醒她、把【日程】块（含刚触发的日程）注入她的唤醒 prompt，由她自主用工具执行并汇报。支持一次性与每天重复；重启不丢；可查可取消。
+
+- `src/schedules.mjs`（新增）：纯逻辑。`SCHEDULE_VERSION=1`；默认配置 `maxItems:50 / summaryMaxChars:500 / fireWindowMs:5min`；`parseClockTime`（`HH:mm` / `HH:mm:ss` / 绝对毫秒时间戳；今天已过则排到明天）；`addSchedule`（超上限拒）/ `dueSchedules` / `fireSchedule`（daily 触发后 dueAt 自动 +24h 保持 pending；一次性触发后 status→done）/ `cancelSchedule` / `scheduleBlock`（唤醒注入块：最近触发 + 待触发列表）/ `summarize`。
+- `src/bridge.js`（改动）：import/归一化 `cfg.socialV2.schedules`；状态文件 `state/schedules.json`；`checkSchedules()` 每 30s 检查到期 → `fireSchedule` + `deliverPrompt(ownerPrivateKey, '', { wakeReason: 'schedule' })` 唤醒她自己执行；`buildWakePromptV2` 新增 `reason === 'schedule'` 分支注入【日程】块；端点 `POST /api/socialV2/schedule-add`（owner-only、agent token、reserved2、`tools.scheduleAdd`、`schedules.enabled`）、`/api/socialV2/schedules`（列表）、`/api/socialV2/schedule-cancel`（取消）；审计留痕 `qq_schedule_add` / `qq_schedule_cancel` / `qq_schedule_fire`。
+- `src/mcp-snowluma-safe.js`（改动）：注册 `qq_schedule_add`（`key/token/title/time/description/repeat`）、`qq_schedule_list`、`qq_schedule_cancel`（`scheduleId`）。
+- `scripts/test-schedules.mjs`（新增）＋ `scripts/test-audit.mjs` / `scripts/audit-bridge-harness.mjs`（登记 / 接线）。
+- 配置：`config.json` 的 `socialV2.schedules`（`enabled/maxItems/summaryMaxChars/fireWindowMs`）与 `socialV2.tools.scheduleAdd / scheduleList / scheduleCancel`（默认开）。
+- 生效条件：同上（重启桥接 + 重启 DSH + `setup-dsh`）。
+
 
 ### 官方更新（main 有本地提交时，设置页「一键更新」的 `--ff-only` 不适用）
 

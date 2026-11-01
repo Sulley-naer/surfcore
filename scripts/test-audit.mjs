@@ -35,6 +35,8 @@ const tests = [
   'test-qq-exec.mjs',
   // owner 后台任务队列（qq_task_run）：创建/队列上限/FIFO/状态机/汇报分类/重启中断（纯逻辑）。
   'test-owner-tasks.mjs',
+  // owner 日程/定时器（qq_schedule_*）：时间解析/增删/到期触发/daily 推进/注入块（纯逻辑）。
+  'test-schedules.mjs',
   // 出站身份闸：B站 评论/私信/动态/分享发送前拦主人/别人的账号标识（只许自己互认）。
   'test-identity-guard.mjs',
   // 观看历史：追加/去重/轮转/旧记忆回填/评分合并，以及 debrief·watch·角色迁移的接线契约。

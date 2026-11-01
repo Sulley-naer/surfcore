@@ -351,6 +351,9 @@ const TOOL_CONFIG_FLAGS = {
   qq_task_run: 'taskRun',
   qq_task_status: 'taskStatus',
   qq_task_cancel: 'taskCancel',
+  qq_schedule_add: 'scheduleAdd',
+  qq_schedule_list: 'scheduleList',
+  qq_schedule_cancel: 'scheduleCancel',
   qq_collect_sticker: 'collectSticker',
   qq_get_self_image: 'getSelfImage',
   qq_sticker_note: 'stickerNote',
@@ -1345,6 +1348,83 @@ if (cfg.socialV2?.tools?.taskCancel !== false) {
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `撤任务失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.scheduleAdd !== false) {
+  server.tool(
+    'qq_schedule_add',
+    '把一件事排到某个时间点：到点桥接会唤醒你，把「该做这件事了」塞进你的指令里，你再用自己的工具去执行（比如刷 B 站/搜热点，做完把链接发给主人）。适合「晚上 8 点去刷两条 B 站，把链接甩给你」这类日程。time 用 "HH:mm" 或 "HH:mm:ss"（24 小时制；今天这个点已过就排到明天），也可以传绝对毫秒时间戳。repeat="daily" 表示每天同一时刻重复（适合「每天下班甩链接」），默认一次性。仅管理员私聊可用。到点前后 `qq_schedule_list` 可查。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      title: z.string().describe('一句话标题，如「刷两条 B 站」'),
+      time: z.string().describe('时间，如 "20:00"、"20:30:00"，或绝对毫秒时间戳'),
+      description: z.string().optional().describe('要做什么（可空），比如「刷两条 B 站，把链接发给主人」'),
+      repeat: z.enum(['none', 'daily']).optional().describe('none=一次性（默认），daily=每天同一时刻'),
+    },
+    async ({ key, token, title, time, description, repeat }) => {
+      try {
+        const data = await agentApi('/api/socialV2/schedule-add', {
+          method: 'POST',
+          body: JSON.stringify({ key, title: String(title), time: String(time), description: description ?? '', repeat: repeat ?? 'none' }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `排日程失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.scheduleList !== false) {
+  server.tool(
+    'qq_schedule_list',
+    '查看你安排的所有日程：待触发的（按时间排序）、已完成的、已取消的。仅管理员私聊可用。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    },
+    async ({ key, token }) => {
+      try {
+        const data = await agentApi('/api/socialV2/schedules', {
+          method: 'POST',
+          body: JSON.stringify({ key }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `查日程失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.scheduleCancel !== false) {
+  server.tool(
+    'qq_schedule_cancel',
+    '取消一条日程（一次性或每天重复的都行）。scheduleId 用 qq_schedule_list 返回的 id（如 s3）。仅管理员私聊可用。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      scheduleId: z.string().describe('要取消的日程 id（来自 qq_schedule_list，如 s3）'),
+    },
+    async ({ key, token, scheduleId }) => {
+      try {
+        const data = await agentApi('/api/socialV2/schedule-cancel', {
+          method: 'POST',
+          body: JSON.stringify({ key, scheduleId: String(scheduleId) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `取消日程失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
