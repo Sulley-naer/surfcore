@@ -37,6 +37,7 @@ import {
   popNextTask,
   startTask,
   finishTask,
+  taskById,
   cancelTask,
   runningTasks,
   pendingTasks,
