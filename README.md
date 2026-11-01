@@ -60,7 +60,53 @@
 - 生效条件：同上（重启桥接 + 重启 DSH + `setup-dsh`）。
 
 
-### 官方更新（main 有本地提交时，设置页「一键更新」的 `--ff-only` 不适用）
+### 更新到上游新版本（怎么合并官方更新）
+
+**分支模型**（不要把自用改动合进 `main`，否则设置页「一键更新」的 `--ff-only` 会永久失效）：
+
+| 分支 | 内容 | 用途 |
+| --- | --- | --- |
+| `main` | 纯上游，保持干净 | 设置页「一键更新」仍可用 |
+| `feat/voice-asr` | 自用功能（语音转写、发图、受控命令、后台任务、日程） | 日常开发分支 |
+| `feat/portable` | 上面这些 + 跨设备迁移工具 | 迁移时给新机拉的集成分支 |
+
+**标准更新流程**（以合并到 v0.8.6 为例）：
+
+```bash
+cd D:\surfcore\repo
+git fetch origin --tags                 # 拿上游新版本（v0.8.5 / v0.8.6 ...）
+git checkout feat/voice-asr
+git merge origin/main --no-edit         # 冲突通常只在 README.md / src/bridge.js / scripts/test-audit.mjs / scripts/audit-bridge-harness.mjs
+# ↑ 冲突原则：两边都要保留（自用功能的 import/注册 + 上游新增的模块/测试登记）
+node --check src/bridge.js
+node scripts/test-audit.mjs             # 回归（当前基线：110/112，2 个历史性失败不算）
+git push mine feat/voice-asr
+git checkout feat/portable
+git merge feat/voice-asr --no-edit      # 再同步到集成分支
+git push mine feat/portable
+```
+
+**更新后按需处理**：
+- `package.json` 依赖变了 → `npm install`
+- `plugins/surfcore/presets/*` 变了 → `node scripts/setup-dsh.mjs`（跑完不影响运行中的 DSH，需完全退出重开）
+- 上游新增了测试/模块 → 记得在 `scripts/test-audit.mjs` 与 `scripts/audit-bridge-harness.mjs` 里登记/接线
+- 重启桥接（`restart.bat`）+ 完全退出重开 DSH，新代码才生效
+
+**上游 v0.8.5 起的新行为**（要知道，否则会以为出 bug）：
+- `src/dsh-health.js`：DSH 升级若摘掉 profile 的 3 条 MCP，桥接会弹 **L2 `dsh-profile-mcp-missing`**，提示在宿主机跑 `node scripts/setup-dsh.mjs`；
+- 已映射会话的 `agentPreset` 与当前配置不一致时**自动退役重建**（旧会话工具表创建时定死），所以重启后 QQ 会话上下文重新开始是预期行为。
+
+**功能冒烟测试**（桥接在跑时手工执行，覆盖管理员命令 / 后台任务 / 日程 / 本地语音识别 / 表情包发图 / 记忆卡）：
+
+```bash
+node scripts\smoke-features.mjs
+```
+
+会真实往 QQ 私聊发一张图（`assets/deepseek娘.png`），介意就把脚本第 5 节注释掉；结果最后一行是 `RESULT 9/9`。
+
+**如果哪天想恢复「设置页一键更新」**：把 `main` 上的本地提交全部 discards（`git checkout main && git reset --hard origin/main`），之后设置页更新即恢复；代价是自用改动只存在于功能分支。
+
+**main 上合并（旧做法，保留备查）**：
 
 ```bash
 git checkout main
