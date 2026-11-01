@@ -45,6 +45,9 @@ function isPlainObject(value) {
 }
 
 function clampInt(value, fallback, min, max) {
+  // null/undefined/空串都算「没传」——否则 Number(null)=0 是有限数，会被 min 夹成最小值
+  // （qq_task_run 不传 timeoutMs 时曾因此把默认 30 分钟变成 60 秒）。
+  if (value === null || value === undefined || value === '') return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.round(n)));
