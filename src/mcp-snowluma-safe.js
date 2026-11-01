@@ -347,6 +347,10 @@ const TOOL_CONFIG_FLAGS = {
   qq_get_sticker_image: 'getStickerImage',
   qq_send_sticker: 'sendSticker',
   qq_send_image: 'sendImage',
+  qq_run_code: 'runCode',
+  qq_task_run: 'taskRun',
+  qq_task_status: 'taskStatus',
+  qq_task_cancel: 'taskCancel',
   qq_collect_sticker: 'collectSticker',
   qq_get_self_image: 'getSelfImage',
   qq_sticker_note: 'stickerNote',
@@ -1240,6 +1244,107 @@ if (cfg.socialV2?.tools?.sendImage !== false) {
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `发送图片失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.runCode !== false) {
+  server.tool(
+    'qq_run_code',
+    '在管理员本机执行一条受控命令（只读为主），返回 stdout/stderr。仅管理员私聊可用；命令走首词白名单 + 注入黑名单，写操作/删除/改配置会被拒绝。适合「帮我看看 git 状态 / 这个文件内容 / 端口占用」这类只读任务。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      command: z.string().describe('要执行的单条命令，如 "git status"、"dir"、"type README.md"（Windows cmd 环境，没有 ls/cat）'),
+    },
+    async ({ key, token, command }) => {
+      try {
+        const data = await agentApi('/api/socialV2/run-code', {
+          method: 'POST',
+          body: JSON.stringify({ key, command: String(command) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 90000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `执行命令失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.taskRun !== false) {
+  server.tool(
+    'qq_task_run',
+    '把一个长任务挂到后台队列执行，立即结束当前对话回合、不占用消息通道。适合下载、安装环境、构建这类耗时长的命令（一问一答的 qq_run_code 只适合 60 秒内的命令）。最多 2 个并行、排队最多 10 个（超出会被拒绝）。命令默认黑名单模式（放行任意命令、只拦破坏性指令）。执行日志会写到文件（对话里只报日志路径，不要把日志正文塞回对话）。任务完成后，你会在唤醒时收到【任务】汇报块：先向主人汇报任务结果、再回应其他内容；失败或需要主人拍板的任务会当场主动通知主人。参数：title 一句话标题（如「下载 faster-whisper 模型」）；command 要跑的命令；timeoutMs 可选超时毫秒（默认 30 分钟、上限 6 小时）。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      title: z.string().describe('一句话标题，如「下载 faster-whisper 模型」'),
+      command: z.string().describe('要后台执行的命令，如 "pip download torch --dest C:/dl"'),
+      timeoutMs: z.number().optional().describe('可选超时毫秒（默认 30 分钟、上限 6 小时）'),
+    },
+    async ({ key, token, title, command, timeoutMs }) => {
+      try {
+        const data = await agentApi('/api/socialV2/task-run', {
+          method: 'POST',
+          body: JSON.stringify({ key, title: String(title), command: String(command), timeoutMs: timeoutMs ?? null }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 90000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `挂任务失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.taskStatus !== false) {
+  server.tool(
+    'qq_task_status',
+    '查看后台任务队列：运行中 / 排队中 / 待汇报的任务与最近历史（含日志路径）。适合主人问「任务跑得怎么样了」时用。仅管理员私聊可用。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    },
+    async ({ key, token }) => {
+      try {
+        const data = await agentApi('/api/socialV2/tasks', {
+          method: 'POST',
+          body: JSON.stringify({ key }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `查询任务失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.taskCancel !== false) {
+  server.tool(
+    'qq_task_cancel',
+    '撤销一个还在排队（未开始执行）的任务。运行中的任务第一版不支持喊停。taskId 用 qq_task_status 返回的 id（如 t3）。仅管理员私聊可用。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      taskId: z.string().describe('要撤销的任务 id（来自 qq_task_status，如 t3）'),
+    },
+    async ({ key, token, taskId }) => {
+      try {
+        const data = await agentApi('/api/socialV2/task-cancel', {
+          method: 'POST',
+          body: JSON.stringify({ key, taskId: String(taskId) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `撤任务失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
