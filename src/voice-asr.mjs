@@ -346,6 +346,8 @@ export function createVoiceAsr({ getCfg, log = () => {} } = {}) {
       if (!buf?.length) throw new Error('语音文件为空');
       if (buf.length > asr.maxBytes) throw new Error(`音频过大（${buf.length} 字节）`);
       // 优先走常驻服务（模型常驻内存）；服务没起/失败再退回按需 spawn（每次重载模型）。
+      const si = buf.indexOf(SILK_MAGIC);
+      if (si > 0 && si <= 4) buf = buf.subarray(si);
       if (asr.serverEnabled) {
         try {
           return await transcribeViaServer(buf, asr.language, Math.min(asr.localTimeoutMs, timeoutMs));
