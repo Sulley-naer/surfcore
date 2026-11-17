@@ -171,6 +171,9 @@ const SAFE_PREFIXES = [
 const SAFE_EXACT = new Set([
   'ask_user_question',
   'todo_write',
+  // dsh-see-now（2026-11-17 安装）：屏幕视觉感知插件，看屏幕/发 say。只读屏幕像素 +
+  // 悬浮窗展示，不含命令执行/文件写；say 走 TTS 与悬浮窗，属预期内的展示通道。
+  'see_now',
   // 表情包插件 dsh-nekowhale-stickers（2026-11-01 安装）：只做表情检索/发送/模板拼图，
   // 不含本地执行或进程能力。meme_render 的 image 参数可读本地图片，自用场景接受。
   'sticker_search',
