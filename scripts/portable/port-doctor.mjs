@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -86,6 +87,31 @@ if (slHome) {
   check(exists(slHome), 'warn', 'SnowLuma homeDir', slHome);
   check(exists(path.join(slHome, 'config')), 'warn', 'SnowLuma config/（onebot_*.json 含 WS token）');
 } else add('info', 'paths.json 未填 snowlumaHome，跳过 SnowLuma 检查', '');
+
+// 8. 新功能运行时（see-now / phone 通道 / 隧道）
+const RUNTIMES = process.env.SURFCORE_RUNTIMES || path.join('D:', 'surfcore', 'runtimes');
+check(exists(RUNTIMES), 'warn', 'runtimes 目录', RUNTIMES);
+check(exists(path.join(RUNTIMES, 'see-now-voice-adapter.mjs')), 'warn', 'see-now voice adapter');
+check(exists(path.join(RUNTIMES, 'start-cloudflared.ps1')), 'warn', 'cloudflared 启动脚本', '隧道自启用');
+for (const f of ['voice.json', 'asr.json', 'see-window.json']) {
+  check(exists(path.join(DSH_HOME, f)), 'warn', `~/.dsh/${f}`, '从旧机导出包 dsh-home/ 恢复');
+}
+const cfCfg = path.join(HOME, '.cloudflared', 'config.yml');
+check(exists(cfCfg), 'warn', '~/.cloudflared/config.yml', '公网隧道；凭据 JSON 需 tunnel login 重建');
+
+// 计划任务（登录自启）
+try {
+  const out = execFileSync('schtasks', ['/query', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+  for (const name of ['SurfCoreCloudflared', 'SurfCoreVoiceLocal']) {
+    check(out.includes(name), 'warn', `计划任务 ${name}`, '若缺：重跑 bootstrap 或手动 Register-ScheduledTask');
+  }
+} catch { add('info', 'schetasks 查询失败，跳过计划任务检查', ''); }
+
+// phone 通道端口
+try {
+  const nl = execFileSync('cmd', ['/c', 'netstat -ano | findstr :8787'], { encoding: 'utf8', windowsHide: true });
+  check(/LISTENING/i.test(nl), 'warn', '手机通道 8787 监听', '若缺：重启桥接后应自动监听');
+} catch { check(false, 'warn', '手机通道 8787 监听', '未监听（桥接没起或端口被占）'); }
 
 // 输出
 const fails = results.filter((r) => r.level === 'fail');

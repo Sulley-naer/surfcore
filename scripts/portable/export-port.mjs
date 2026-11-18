@@ -27,6 +27,13 @@ const HOME = process.env.USERPROFILE || os.homedir();
 const DSH_HOME = process.env.DSH_HOME || path.join(HOME, '.dsh');
 const SURFCORE_HOME = path.join(DSH_HOME, 'surfcore');
 const QQ_STATE = path.join(ROOT, 'state');
+// 运行时目录（与 repo 同级：D:\surfcore\runtimes）。只搬脚本/配置，不搬 venv / 模型权重 / 大二进制。
+const RUNTIMES_DIR = process.env.SURFCORE_RUNTIMES || path.join(path.dirname(ROOT), 'runtimes');
+// ~/.dsh 下属于本系统的「新功能配置」（see-now / 语音适配器 / ASR 客户端）。只点名这几个，不整目录搬。
+const DSH_HOME_FILES = ['voice.json', 'asr.json', 'see-window.json', 'see-now.json'];
+// Cloudflare 隧道配置（含隧道 ID 与凭据路径；凭据 JSON 本身是密钥，不导出）。
+const CLOUDFLARED_DIR = path.join(HOME, '.cloudflared');
+const CLOUDFLARED_FILES = ['config.yml'];
 
 // ── 参数 ──
 function arg(name, fallback) {
@@ -59,7 +66,16 @@ const ALWAYS_EXCLUDE = [
   /(^|\/)config\.json$/,          // 合体层 config.json（含 consoleToken/accessToken）
   /credentials.*\.json$/,
   /(^|\/)\.git(\/|$)/,
+  // 运行时目录特有：权重/缓存/大二进制/压缩包一律不搬（可重新下载或本来就不需要）
+  /(^|\/)models(\/|$)/,
+  /\.(bin|onnx|pt|pth|safetensors|zip|7z|whl|node)$/,
+  /(^|\/)node\.exe$/,
+  // 运行时目录里的临时/测试产物
+  /(^|\/)\.last-phone-task$/,
+  /\.wav$/,
+  /(^|\/)[a-z-]*log\.json$/,
 ];
+const MAX_RUNTIME_FILE = 20 * 1024 * 1024; // 运行时单文件上限 20MB（超过视为二进制/权重，不搬）
 // 语音包专用排除。语音包的「代码 + 参考音频」要随包走，「权重/venv/缓存」不随包走。
 // - ALWAYS：venv / pip 缓存 / 日志 / pycache / .download 模型缓存，任何档位都不带。
 // - WEIGHT：可重新下载的权重（refs 不带，all 才带）。
@@ -161,14 +177,35 @@ async function copyRoots(stageRoot) {
   const jobs = [
     { src: QQ_STATE, baseRel: 'surfcore' },
     { src: SURFCORE_HOME, baseRel: 'surfcore-home' },
+    // 新功能运行时的「脚本 + 配置」（see-now 适配器 / faster-whisper 脚本 / cloudflared 启动脚本）
+    { src: RUNTIMES_DIR, baseRel: 'runtimes' },
+    // ~/.dsh 下本系统的新功能配置（只点名几个文件）
+    { src: DSH_HOME, baseRel: 'dsh-home', only: DSH_HOME_FILES },
+    // Cloudflare 隧道配置（只 config.yml；凭据 JSON 是密钥，不导出）
+    { src: CLOUDFLARED_DIR, baseRel: 'cloudflared', only: CLOUDFLARED_FILES },
   ].filter((j) => fs.existsSync(j.src));
   const manifest = [];
   const redactions = [];
+  const skipped = [];
   let totalBytes = 0;
   for (const j of jobs) {
-    for (const f of walk(j.src, j.baseRel)) {
+    let files;
+    if (j.only) {
+      // 点名文件：直接取，不遍历整个目录（~/.dsh 里 node_modules 等很大）
+      files = j.only
+        .map((name) => ({ abs: path.join(j.src, name), rel: `${j.baseRel}/${name}` }))
+        .filter((f) => fs.existsSync(f.abs));
+    } else {
+      files = walk(j.src, j.baseRel);
+    }
+    for (const f of files) {
+      const st = fs.statSync(f.abs);
+      if (j.baseRel === 'runtimes' && st.size > MAX_RUNTIME_FILE) {
+        skipped.push({ path: f.rel, size: st.size, reason: '>20MB（运行时二进制/权重）' });
+        continue;
+      }
       const dest = path.join(stageRoot, f.rel);
-      if (DRY_RUN) { manifest.push({ path: f.rel, size: fs.statSync(f.abs).size, sha256: '(dry-run)' }); continue; }
+      if (DRY_RUN) { manifest.push({ path: f.rel, size: st.size, sha256: '(dry-run)' }); continue; }
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       let data = fs.readFileSync(f.abs);
       const kinds = scanSecrets(f.abs);
@@ -194,7 +231,7 @@ async function copyRoots(stageRoot) {
     const src = path.join(ROOT, 'scripts', 'portable', t);
     if (fs.existsSync(src) && !DRY_RUN) fs.copyFileSync(src, path.join(stageRoot, 'portable', t));
   }
-  return { manifest, redactions, totalBytes };
+  return { manifest, redactions, totalBytes, skipped };
 }
 
 function gitInfo() {
@@ -213,7 +250,7 @@ async function main() {
   if (DRY_RUN) console.log(`[dry-run] 目标：${stageRoot}`);
   else fs.mkdirSync(stageRoot, { recursive: true });
 
-  const { manifest, redactions, totalBytes } = await copyRoots(stageRoot);
+  const { manifest, redactions, totalBytes, skipped } = await copyRoots(stageRoot);
 
   const config = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8')); } catch { return {}; } })();
   const machinePaths = {
@@ -225,6 +262,14 @@ async function main() {
       modelDir: config.socialV2?.voice?.asr?.modelDir,
     },
   };
+  const scheduledTasks = (() => {
+    const r = spawnSync('schtasks', ['/query', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+    if (r.status !== 0) return [];
+    return String(r.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.split('","')[0].replace(/^"/, '').replace(/^\\/, ''))
+      .filter((name) => /^SurfCore/i.test(name));
+  })();
   const doc = {
     exportedAt: new Date().toISOString(),
     surfcore: gitInfo(),
@@ -233,9 +278,13 @@ async function main() {
     node: process.version,
     platform: `${os.platform()} ${os.release()}`,
     dshHome: DSH_HOME,
+    runtimesDir: RUNTIMES_DIR,
+    cloudflaredConfig: path.join(CLOUDFLARED_DIR, 'config.yml'),
+    scheduledTasks,
     machinePaths,
     totalFiles: manifest.length,
     totalBytes,
+    skipped,
     redactions,
     files: manifest,
   };
@@ -245,6 +294,7 @@ async function main() {
   console.log(`\n导出完成：${stageRoot}`);
   console.log(`  文件 ${manifest.length} 个，共 ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
   console.log(`  疑似含敏感信息 ${redactions.length} 处${MASK ? '（已按 --mask 打码）' : '（未打码，见 manifest.redactions）'}`);
+  if (skipped.length) console.log(`  跳过运行时大文件 ${skipped.length} 个（权重/二进制，见 manifest.skipped）`);
   if (!NO_ZIP && !DRY_RUN) {
     const zip = stageRoot + '.zip';
     const r = spawnSync('tar', ['-a', '-c', '-f', zip, '-C', OUT, dirName], { encoding: 'utf8' });

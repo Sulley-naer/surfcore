@@ -15,6 +15,7 @@ param(
   [Parameter(Mandatory=$true)][string]$Package,
   [string]$RepoDir = 'D:\surfcore\repo',
   [string]$RuntimeBase = 'E:\DeepSeeK',
+  [string]$RuntimeDir = 'D:\surfcore\runtimes',
   [ValidateSet('none','refs','all')][string]$Voice = 'none',
   [switch]$SkipVoice,
   [switch]$SkipAsr,
@@ -73,6 +74,30 @@ if (Test-Path $pHome) {
   OK "已恢复 $SurfcoreHome"
 }
 
+# ── 3b. 新功能运行时（see-now 适配器 / ASR 脚本 / phone 通道 / 隧道脚本）──
+Step '恢复新功能运行时脚本与 ~/.dsh 配置'
+$pRt = Join-Path $Package 'runtimes'
+if (Test-Path $pRt) {
+  New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
+  Copy-Item (Join-Path $pRt '*') $RuntimeDir -Recurse -Force
+  OK "已恢复运行时脚本 → $RuntimeDir"
+} else { WARN '导出包里没有 runtimes/（旧包导出），跳过' }
+
+$pDsh = Join-Path $Package 'dsh-home'
+if (Test-Path $pDsh) {
+  New-Item -ItemType Directory -Force -Path $DshHome | Out-Null
+  Copy-Item (Join-Path $pDsh '*.json') $DshHome -Force
+  WARN "已恢复 ~/.dsh 下 voice.json / asr.json / see-window.json / see-now.json —— 里面的路径是旧机的，按新机改：$DshHome"
+}
+
+$pCf = Join-Path $Package 'cloudflared'
+if (Test-Path (Join-Path $pCf 'config.yml')) {
+  $cfDir = Join-Path $env:USERPROFILE '.cloudflared'
+  New-Item -ItemType Directory -Force -Path $cfDir | Out-Null
+  Copy-Item (Join-Path $pCf 'config.yml') $cfDir -Force
+  WARN "已恢复 Cloudflare 隧道 config.yml；但凭据 JSON 不在包里 —— 新机需 cloudflared tunnel login 后重建，或手动拷贝 $cfDir\2907add0-*.json"
+}
+
 # ── 4. 模板与 paths.json ──
 Step '生成配置模板'
 $tplDir = Join-Path $Package 'templates'
@@ -97,6 +122,30 @@ node scripts/setup-dsh.mjs
 Pop-Location
 OK 'npm install + setup-dsh 完成'
 WARN "如果 setup-dsh 没挂上插件，手动跑：dsh plugin --profile desktop install"
+
+# ── 5b. 计划任务（登录自启）──
+Step '注册登录自启计划任务'
+$StartCf = Join-Path $RuntimeDir 'start-cloudflared.ps1'
+if (Test-Path $StartCf) {
+  try {
+    $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StartCf`""
+    $trg = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    Register-ScheduledTask -TaskName 'SurfCoreCloudflared' -Action $act -Trigger $trg `
+      -Description 'SurfCore: Cloudflare named tunnel (wake.xinzhi.stream)' -Force | Out-Null
+    OK '已注册 SurfCoreCloudflared（登录时启动隧道）'
+  } catch { WARN "注册 SurfCoreCloudflared 失败：$($_.Exception.Message)" }
+} else { WARN "缺少 $StartCf，跳过隧道自启任务" }
+
+$VoiceBat = Join-Path $RepoDir 'state\voice-packs\voice-local\run.bat'
+if ((Test-Path $VoiceBat) -and $Voice -ne 'none') {
+  try {
+    $act2 = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$VoiceBat`""
+    $trg2 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    Register-ScheduledTask -TaskName 'SurfCoreVoiceLocal' -Action $act2 -Trigger $trg2 `
+      -Description 'SurfCore: local TTS voice pack (voxd 8765 / gsv 9880)' -Force | Out-Null
+    OK '已注册 SurfCoreVoiceLocal（登录时拉起语音包）'
+  } catch { WARN "注册 SurfCoreVoiceLocal 失败：$($_.Exception.Message)" }
+} else { WARN '未注册 SurfCoreVoiceLocal（没有 run.bat 或 -Voice none）' }
 
 # ── 6. 语音包（可选）──
 if ($Voice -ne 'none' -and -not $SkipVoice) {
@@ -127,14 +176,18 @@ if ($Voice -ne 'none' -and -not $SkipVoice) {
 # ── 7. 本地 ASR（可选）──
 if (-not $SkipAsr) {
   Step '重建本地语音转写（faster-whisper）'
-  $fw = Join-Path $RuntimeBase 'faster-whisper'
-  if (Test-Path (Join-Path $fw 'stt_server.py')) { OK "faster-whisper 已就绪于 $fw" }
+  $fw = Join-Path $RuntimeDir 'faster-whisper'
+  $hasScripts = (Test-Path (Join-Path $fw 'stt_server.py')) -and (Test-Path (Join-Path $fw 'transcribe.py'))
+  if ($hasScripts) { OK "ASR 脚本已就绪于 $fw（来自 runtimes/）" }
+  else { WARN "缺少 $fw\stt_server.py / transcribe.py（导出包 runtimes/faster-whisper 应带上）" }
+  if (Test-Path (Join-Path $fw '.venv\Scripts\python.exe')) { OK 'ASR venv 已存在' }
   else {
-    WARN "faster-whisper 运行时不在导出包里（它是运行时），请手动搭或从旧机拷贝 scripts："
-    WARN "  1) python -m venv $fw\.venv && 装 faster-whisper==1.2.1 ctranslate2==4.8.4 av==15.1.0 pilk opencc-python-reimplemented"
-    WARN "  2) 下载模型 Systran/faster-whisper-small 到 $fw\models\small\model.bin（hf-mirror.com）"
-    WARN "  3) 拷贝 transcribe.py / stt_server.py（端口 8766）"
+    WARN "创建 ASR venv 并装依赖（约 5 分钟，建议走代理）："
+    WARN "  python -m venv $fw\.venv && $fw\.venv\Scripts\python.exe -m pip install faster-whisper av==15.1.0 pilk opencc-python-reimplemented numpy pyaudiowpatch"
   }
+  if (-not (Test-Path (Join-Path $fw 'models\small\model.bin'))) {
+    WARN "缺少模型：从 https://hf-mirror.com/Systran/faster-whisper-small/resolve/main/ 下 config.json / model.bin / tokenizer.json / vocabulary.txt 到 $fw\models\small\"
+  } else { OK 'ASR 模型 model.bin 已就绪' }
 }
 
 # ── 8. SnowLuma（可选）──
