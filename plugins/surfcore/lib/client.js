@@ -5121,8 +5121,10 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       const [picked, setPicked] = useState(null);   // null = 用套件默认（enabled）
       const [err, setErr] = useState("");
       const [features, setFeatures] = useState([]);
+      const [bridge, setBridge] = useState(null);
       const [featureFile, setFeatureFile] = useState("");
       const [featBusy, setFeatBusy] = useState("");
+      const [ackedFailure, setAckedFailure] = useState(null); // 已提示过的失败 runId
 
       const load = useCallback(async () => {
         try {
@@ -5135,6 +5137,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           }
         } catch (e) { setErr(e.message); }
       }, []);
+      const loadBridge = useCallback(async () => {
+        try { setBridge(await api("/bridge-status")); } catch (e) { setBridge({ ok: false, error: e.message }); }
+      }, []);
       const loadFeatures = useCallback(async () => {
         try {
           const r = await api("/features");
@@ -5142,7 +5147,12 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           setFeatureFile(r.file || "");
         } catch {}
       }, []);
-      useEffect(() => { load(); loadFeatures(); }, [load, loadFeatures]);
+      useEffect(() => { load(); loadFeatures(); loadBridge(); }, [load, loadFeatures, loadBridge]);
+      // 桥接状态：30 秒刷新（只读聚合，成本很低）。
+      useEffect(() => {
+        const t = setInterval(() => { loadBridge(); }, 30000);
+        return () => clearInterval(t);
+      }, [loadBridge]);
 
       // 有 run 在跑就轮询，跑完自动停（不依赖发起调用的那个调用栈）。
       useEffect(() => {
@@ -5151,6 +5161,22 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         const t = setInterval(() => { load(); }, 2500);
         return () => clearInterval(t);
       }, [data, load]);
+
+      // 空闲时低频轮询：定时自检跑完（尤其失败）要能在这里弹出来。
+      useEffect(() => {
+        if (data?.current?.id) return undefined;
+        const t = setInterval(() => { load(); }, 60000);
+        return () => clearInterval(t);
+      }, [data?.current?.id, load]);
+
+      // 新失败 → toast 一次（同一次 run 不重复打扰）。
+      useEffect(() => {
+        const f = data?.lastFailure;
+        if (!f?.runId || f.runId === ackedFailure) return;
+        setAckedFailure(f.runId);
+        const ids = (f.suites || []).map((s) => s.id).join(", ");
+        toast(`✗ 自检失败：${ids || f.runId}（${f.summary?.fail ?? "?"} 项）`);
+      }, [data, ackedFailure, toast]);
 
       const suites = data?.suites ?? [];
       const selected = new Set(picked ?? suites.filter((s) => s.enabled !== false).map((s) => s.id));
@@ -5182,7 +5208,26 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
 
       return h("div", null,
         h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+          h("div", { className: "qbw-category-title" }, "桥接运行状态（只读）"),
+          bridge?.ok === false
+            ? h("div", { className: "qbw-hint", style: { color: "var(--dsw-alias-state-error-primary,#d64545)" } }, `读不到桥接：${bridge.error}`)
+            : !bridge
+              ? h("div", { className: "qbw-hint" }, "读取中…")
+              : h("div", null,
+                h("div", { className: "qbw-hint", style: { lineHeight: "1.9" } },
+                  `模式 ${bridge.mode ?? "—"} · DSH ${bridge.dshReady ? "就绪" : "未就绪"} · 角色 ${bridge.role ?? "—"} · QQ ${bridge.ownerQQ ?? "—"}`,
+                  h("br"),
+                  `SnowLuma ${bridge.snowluma?.connected ? "已连" : "未连"}${bridge.snowluma?.accountOnline ? " / 账号在线" : ""}${bridge.snowluma?.good ? " ✓" : ""}`,
+                  ` · 主动搭话 今日 ${bridge.purpose?.countToday ?? 0}/${bridge.purpose?.dailyMax ?? "—"}${bridge.purpose?.nextFireText ? `（下次 ${bridge.purpose.nextFireText}）` : ""}`,
+                  h("br"),
+                  h("span", { style: { opacity: ".7" } }, `本机控制台 :${bridge.port ?? "—"} · 更新于 ${fmtTime(bridge.fetchedAt)}`)),
+                h(Btn, { kind: "qbw-btn2", onClick: loadBridge }, "刷新状态"))),
+        h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
           h("div", { className: "qbw-category-title" }, "自检套件（配置在 ~/.dsh/surfcore/test-suites.json）"),
+          data?.lastFailure ? h("div", {
+            className: "qbw-hint",
+            style: { marginBottom: "8px", padding: "6px 8px", borderRadius: "6px", color: "var(--dsw-alias-state-error-primary,#d64545)", background: "rgba(214,69,69,.08)" },
+          }, `最近一次失败：${data.lastFailure.runId}（${(data.lastFailure.suites || []).map((s) => `${s.id}:${s.status}`).join("、")}）—— 详见下方结果表`) : null,
           err ? h("div", { className: "qbw-hint", style: { color: "var(--dsw-alias-state-error-primary,#d64545)" } }, err) : null,
           h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
             `套件 ${suites.length} 个（内置 ${data?.source?.builtin ?? 0} / 自定义 ${data?.source?.user ?? 0}）`,

@@ -29,8 +29,9 @@ import {
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
 import { ensureUserSuitesTemplate, loadTestSuites, readSuiteSchedule } from './test-suites.js';
-import { getCurrentRun, getRun, listRuns, schedulerStatus, startRun, startScheduler as startTestScheduler } from './test-runner.js';
+import { getCurrentRun, getRun, listRuns, readLastFailure, schedulerStatus, startRun, startScheduler as startTestScheduler } from './test-runner.js';
 import { applyFeatureState, readFeatureState as readFeatureStateFrom } from './features.js';
+import { registerQqTools } from './qq-tools.js';
 import { discoverSnowLumaConnection } from '../../../src/snowluma-conn.js';
 import { findSnowLumaInstall as findSnowLumaInstallIn, normalizeSnowLumaInstall, snowLumaMissingReport } from './snowluma-install.js';
 import { buildInstallChecks, installOk, planDoctorFix } from './doctor.js';
@@ -207,6 +208,28 @@ function writeFeatureState(values) {
 
 export function apply(ctx) {
   ensureDirs();
+  // owner 控制类 qq_* 工具的插件内注册（config.json 的 socialV2.toolSource === 'plugin' 才生效）。
+  // 单独做成内层插件，配置变了可以只重挂这一层（/qq-tools/reload），不用重启整个 DSH。
+  let qqToolsFiber = null;
+  let lastQqTools = [];
+  const QqToolsAgent = {
+    name: 'surfcore-qq-tools',
+    inject: ['tools'],
+    apply(actx) {
+      try {
+        lastQqTools = registerQqTools(actx, { log: pluginLog });
+        if (lastQqTools.length) pluginLog(`[qq-tools] 插件层已注册 ${lastQqTools.length} 个工具：${lastQqTools.join(', ')}`);
+      } catch (error) {
+        pluginLog('[qq-tools] 注册失败：', String(error?.message ?? error));
+      }
+    },
+  };
+  const remountQqTools = () => {
+    try { void qqToolsFiber?.dispose?.(); } catch {}
+    qqToolsFiber = ctx.plugin(QqToolsAgent);
+    return lastQqTools.slice();
+  };
+  remountQqTools();
   // 自检套件模板：不存在才写（用户可编辑 ~/.dsh/surfcore/test-suites.json）
   try { ensureUserSuitesTemplate(); } catch (error) { pluginLog('[self-test] 写套件模板失败：', String(error?.message ?? error)); }
   // 定时自检：读 test-suites.json 的 schedule 段（intervalMinutes / tags / onStart）
@@ -3350,6 +3373,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       json(res, 200, {
         ok: true, suites, source, file, runs: listRuns(10), current: getCurrentRun(),
         schedule: readSuiteSchedule(), scheduler: schedulerStatus(),
+        lastFailure: readLastFailure(),
       });
       return;
     }
@@ -3377,6 +3401,56 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       try { body = JSON.parse(await readBody(req) || '{}'); } catch { json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); return; }
       const result = writeFeatureState(body.values ?? body);
       json(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    // —— 桥接运行状态（聚合 /api/status，只读；页面轮询用）——
+    if (pathname === `${API_PREFIX}/qq-tools/reload` && req.method === 'POST') {
+      await readBody(req);
+      const tools = remountQqTools();
+      return json(res, 200, { ok: true, tools, note: '插件层工具已重新挂载（仅 toolSource=plugin 时生效）' });
+    }
+    if (pathname === `${API_PREFIX}/bridge-status`) {
+      if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
+      try {
+        const qq = readQqConfig().config ?? {};
+        const port = Number(qq.consolePort) || 3100;
+        const token = String(qq.consoleToken ?? '').trim();
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 5000);
+        let raw;
+        try {
+          const resp = await fetch(`http://127.0.0.1:${port}/api/status`, {
+            headers: { 'x-console-token': token }, signal: ctrl.signal,
+          });
+          raw = await resp.json();
+        } finally { clearTimeout(timer); }
+        const purpose = raw.purpose ?? {};
+        const snow = raw.snowluma ?? {};
+        json(res, 200, {
+          ok: true,
+          port,
+          mode: raw.mode ?? null,
+          dshReady: raw.dshReady ?? null,
+          dshBaseUrl: raw.dshBaseUrl ?? null,
+          role: raw.role ?? null,
+          roleMode: raw.roleMode ?? null,
+          ownerQQ: raw.ownerQQ ?? null,
+          paused: raw.socialV2Paused ?? null,
+          snowluma: {
+            connected: snow.connected === true, accountOnline: snow.accountOnline === true,
+            good: snow.good === true, lastPacketAgoMs: snow.lastPacketAgoMs ?? null,
+            hint: snow.hint ?? null,
+          },
+          purpose: {
+            enabled: purpose.enabled !== false, countToday: purpose.countToday ?? 0,
+            dailyMax: purpose.dailyMax ?? null, nextFireText: purpose.nextFireText ?? '',
+            lastOutcome: purpose.lastOutcome ?? '',
+          },
+          fetchedAt: Date.now(),
+        });
+      } catch (error) {
+        json(res, 502, { ok: false, error: `读桥接状态失败：${String(error?.message ?? error)}` });
+      }
       return;
     }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
