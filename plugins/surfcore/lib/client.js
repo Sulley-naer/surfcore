@@ -5114,6 +5114,121 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           h(Btn, { kind: "qbw-btn2", onClick: () => { setQuery(""); }, disabled: !!busy }, "清空搜索")));
     }
 
+    // ── 自检（声明式套件 + 桥接功能开关）─────────────────────────────────────
+    function SelfTestTab({ toast, busy, setBusy }) {
+      const [data, setData] = useState(null);
+      const [run, setRun] = useState(null);
+      const [picked, setPicked] = useState(null);   // null = 用套件默认（enabled）
+      const [err, setErr] = useState("");
+      const [features, setFeatures] = useState([]);
+      const [featureFile, setFeatureFile] = useState("");
+      const [featBusy, setFeatBusy] = useState("");
+
+      const load = useCallback(async () => {
+        try {
+          const r = await api("/tests");
+          setData(r);
+          setErr("");
+          if (r.current?.id) setRun(r.current);
+          else if (r.runs?.length) {
+            try { setRun((await api(`/tests/run/${encodeURIComponent(r.runs[0].id)}`)).run); } catch {}
+          }
+        } catch (e) { setErr(e.message); }
+      }, []);
+      const loadFeatures = useCallback(async () => {
+        try {
+          const r = await api("/features");
+          setFeatures(r.features || []);
+          setFeatureFile(r.file || "");
+        } catch {}
+      }, []);
+      useEffect(() => { load(); loadFeatures(); }, [load, loadFeatures]);
+
+      // 有 run 在跑就轮询，跑完自动停（不依赖发起调用的那个调用栈）。
+      useEffect(() => {
+        const running = Boolean(data?.current?.id);
+        if (!running) return undefined;
+        const t = setInterval(() => { load(); }, 2500);
+        return () => clearInterval(t);
+      }, [data, load]);
+
+      const suites = data?.suites ?? [];
+      const selected = new Set(picked ?? suites.filter((s) => s.enabled !== false).map((s) => s.id));
+      const toggle = (id) => {
+        const next = new Set(selected);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        setPicked([...next]);
+      };
+      const start = async ({ ids, tags }) => {
+        setBusy("selftest");
+        try {
+          const r = await api("/tests/run", { method: "POST", body: ids ? { ids } : { tags } });
+          toast(`✓ 已开始自检：${r.runId}`);
+          setRun(null);
+          await load();
+        } catch (e) { toast(`✗ ${e.message}`); } finally { setBusy(""); }
+      };
+      const saveFeatures = async (id, value) => {
+        setFeatBusy(id);
+        try {
+          const r = await api("/features", { method: "POST", body: { values: { [id]: value } } });
+          toast(`✓ 已写入（${r.changed} 项），重启 QQ 桥接后生效`);
+          await loadFeatures();
+        } catch (e) { toast(`✗ ${e.message}`); } finally { setFeatBusy(""); }
+      };
+
+      const statusColor = (s) => (s === "pass" ? "ok" : s === "running" || s === "pending" ? "warn" : "bad");
+      const statusText = (s) => ({ pass: "通过", fail: "失败", timeout: "超时", running: "运行中", pending: "排队中" }[s] ?? s);
+
+      return h("div", null,
+        h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+          h("div", { className: "qbw-category-title" }, "自检套件（配置在 ~/.dsh/surfcore/test-suites.json）"),
+          err ? h("div", { className: "qbw-hint", style: { color: "var(--dsw-alias-state-error-primary,#d64545)" } }, err) : null,
+          h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
+            `套件 ${suites.length} 个（内置 ${data?.source?.builtin ?? 0} / 自定义 ${data?.source?.user ?? 0}）`,
+            data?.schedule?.enabled ? ` · 定时：每 ${data.schedule.intervalMinutes || "—"} 分钟 tags=${data.schedule.tags.join("/")}` : " · 定时：未开启"),
+          h("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" } },
+            h(Btn, { kind: "qbw-btn2", onClick: () => start({ ids: [...selected] }), disabled: !!busy || !selected.size }, `跑选中的（${selected.size}）`),
+            h(Btn, { kind: "qbw-btn2", onClick: () => start({ tags: ["unit"] }), disabled: !!busy }, "跑单元测试"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => start({ tags: ["audit"] }), disabled: !!busy }, "跑离线全量"),
+            h(Btn, { kind: "qbw-btn2", onClick: () => start({ tags: ["ops"] }), disabled: !!busy }, "跑迁移体检"),
+            h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新")),
+          suites.map((s) => h("div", { key: s.id, className: "qbw-row", style: { padding: "6px 0", borderBottom: ".5px solid var(--dsw-alias-border-l2)" } },
+            h("label", { style: { display: "flex", gap: "8px", alignItems: "flex-start", cursor: "pointer" } },
+              h("input", { type: "checkbox", checked: selected.has(s.id), onChange: () => toggle(s.id), style: { marginTop: "3px" } }),
+              h("div", null,
+                h("div", { className: "qbw-label" }, s.title || s.id,
+                  h("span", { className: "qbw-badge", style: { marginLeft: "6px" } }, s.tags.join("/") || "custom")),
+                h("div", { className: "qbw-hint" }, `${s.id} · ${s.args.join(" ")} · ${Math.round(s.timeoutMs / 1000)}s${s.note ? ` · ${s.note}` : ""}`))))),
+          data?.current?.id ? h("div", { className: "qbw-hint", style: { marginTop: "6px" } }, `正在跑：${data.current.id}`) : null),
+
+        run ? h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+          h("div", { className: "qbw-category-title" }, `最近一次结果：${run.id}`),
+          h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
+            `${statusText(run.status)} · 通过 ${run.summary?.pass ?? 0} / 失败 ${run.summary?.fail ?? 0} / 超时 ${run.summary?.timeout ?? 0} · 开始 ${fmtTime(run.startedAt)}${run.finishedAt ? ` · 结束 ${fmtTime(run.finishedAt)}` : ""}`),
+          h("table", { className: "qbw-table" },
+            h("thead", null, h("tr", null, h("th", null, "套件"), h("th", null, "状态"), h("th", null, "退出码"), h("th", null, "耗时"))),
+            h("tbody", null, (run.suites ?? []).map((s) => h("tr", { key: s.id },
+              h("td", null, s.title || s.id),
+              h("td", null, h(StatusDot, { ok: s.status === "pass", warn: s.status === "running" || s.status === "pending" }, statusText(s.status))),
+              h("td", null, s.exitCode ?? "—"),
+              h("td", null, s.durationMs ? `${(s.durationMs / 1000).toFixed(1)}s` : "—"))))),
+          (run.suites ?? []).filter((s) => s.tail).map((s) => h("details", { key: `${s.id}-tail`, style: { marginTop: "8px" } },
+            h("summary", { className: "qbw-hint", style: { cursor: "pointer" } }, `${s.id} 输出（末 400 行）`),
+            h("pre", { style: { fontSize: "11px", lineHeight: 1.45, maxHeight: "260px", overflow: "auto", whiteSpace: "pre-wrap", marginTop: "4px" } }, s.tail)))) : null,
+
+        h("div", { className: "qbw-card" },
+          h("div", { className: "qbw-category-title" }, "桥接功能开关"),
+          h("div", { className: "qbw-hint", style: { marginBottom: "8px" } },
+            `写入 ${featureFile || "桥接 config.json"}；改完重启 QQ 桥接生效。缺省=开启。`),
+          features.map((f) => h(Row, { key: f.id, label: f.label, hint: `${f.path}${f.explicit ? "" : "（未显式配置，默认开启）"}` },
+            h(Btn, {
+              kind: "qbw-btn2",
+              disabled: featBusy === f.id,
+              onClick: () => saveFeatures(f.id, !f.value),
+            }, f.value ? "已开 → 关掉" : "已关 → 打开")))));
+    }
+
     // ── 诊断 ────────────────────────────────────────────────────────────────
     function DiagnosticsTab({ busy, setBusy, toast, reload }) {
       const [diag, setDiag] = useState(null);
@@ -5926,6 +6041,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["align", "对齐"],
       ["extensions", "扩展"],
       ["advanced", "全部参数"],
+      ["selftest", "自检"],
       ["diag", "诊断"],
     ];
     const NAMES = { nav: "SurfCore" };
@@ -6135,6 +6251,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
         if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
         if (tab === "advanced") return h(AdvancedTab, { qq: normalizedQq, bili, unified: normalizedUnified, setQqPath, setBiliPath, setUnifiedPath, busy });
+        if (tab === "selftest") return h(SelfTestTab, { busy, setBusy, toast: notify });
         if (tab === "diag") return h(DiagnosticsTab, { busy, setBusy, toast: notify, reload });
         return null;
       };
