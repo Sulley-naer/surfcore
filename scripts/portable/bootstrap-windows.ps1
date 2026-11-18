@@ -48,6 +48,7 @@ foreach ($c in @('git','node','python')) {
   }
 }
 if (Have 'ffmpeg') { OK 'ffmpeg 已就绪' } else { WARN '缺少 ffmpeg，正在 winget 安装'; winget install -e --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements }
+if (Have 'cloudflared') { OK 'cloudflared 已就绪' } else { WARN '缺少 cloudflared（手机公网通道才需要），正在 winget 安装'; winget install -e --id Cloudflare.cloudflared --accept-source-agreements --accept-package-agreements }
 
 # ── 2. 代码仓 ──
 Step '准备代码仓（clone 或更新）'

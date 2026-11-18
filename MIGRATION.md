@@ -59,9 +59,87 @@ bootstrap 会依次：装基础工具 → clone 代码仓 → 恢复数据 → *
 3. **SnowLuma**：把旧机 SnowLuma 的 `config/onebot_*.json` 搬来（里面有 **WS token**，和 HTTP token 是两套）。`snowluma.accessToken`（HTTP）另填在 config.json。
 4. **语音权重**（`--voice refs` 时）：重新下载 GPT-SoVITS 预训练模型到 `state/voice-packs/voice-local/vendor/GPT-SoVITS/code/GPT_SoVITS/pretrained_models/` 和 `models/`。
 5. **faster-whisper**（本地转写）：`D:\surfcore\runtimes\faster-whisper\` 的 venv（`python -m venv .venv` + `pip install faster-whisper av==15.1.0 pilk opencc-python-reimplemented numpy pyaudiowpatch`）+ `models/small/model.bin`（hf-mirror 下 `Systran/faster-whisper-small`）。脚本已随包，模型/venv 需重建。
-6. **Cloudflare 隧道凭据**：`~/.cloudflared/config.yml` 已随包恢复，但 `2907add0-*.json` 凭据不在包里。新机二选一：① `cloudflared tunnel login` → `cloudflared tunnel create surfcore-phone` → 用新 ID 改 config.yml + `tunnel route dns`；② 手动从旧机拷贝 `C:\Users\<你>\.cloudflared\2907add0-5192-4746-b619-8d3d3356a826.json`。
+6. **Cloudflare 隧道凭据**：`~/.cloudflared/config.yml` 已随包恢复，但 `2907add0-*.json` 凭据不在包里。新机二选一：① `cloudflared tunnel login` → `cloudflared tunnel create surfcore-phone` → 用新 ID 改 config.yml + `tunnel route dns`；② 手动从旧机拷贝 `C:\Users\<你>\.cloudflared\2907add0-5192-4746-b619-8d3d3356a826.json`。**完整的安装 + 配置步骤见下一节「三之二」**。
 7. **手机通道令牌**：新机首次启动桥接会自动生成 `state/phone-token`（32 位 hex）。把手机端 `pull_config.json` 的 `baseUrl` 改成新机的局域网地址或隧道域名，`token` 换成新值，并确保手机请求带普通 `User-Agent`（如 `dshgo/1.0`，否则 Cloudflare 返回 403/1010）。
 8. **see-now 配置**：`~/.dsh/see-window.json` 的 `listenPython`、`~/.dsh/asr.json` 的 `manage.start`、`~/.dsh/voice.json` 的 `adapter` 里都是旧机的绝对路径，按新机改（adapter/asr 脚本随 `runtimes/` 恢复）。
+
+---
+
+## 三之二、Cloudflare 隧道（手机在外网也要能收到任务时才需要）
+
+**先说清楚：这一步 bootstrap 不会替你做**——它只恢复 `config.yml` 和注册启动计划任务，`cloudflared` 本身要装、隧道本身要登录授权，都需要人工。
+
+如果手机和电脑永远在同一个局域网，**可以整节跳过**，手机端 `baseUrl` 直接填 `http://<电脑内网IP>:8787`。
+
+### 1. 安装 cloudflared
+
+```powershell
+winget install -e --id Cloudflare.cloudflared
+# 装完确认（新开一个终端）
+cloudflared --version
+```
+
+### 2. 登录 Cloudflare（需要账号，且域名已托管在 CF）
+
+```powershell
+cloudflared tunnel login
+# 会弹浏览器，选你的域名（如 xinzhi.stream）并授权
+# 成功后生成 %USERPROFILE%\.cloudflared\cert.pem
+```
+
+### 3. 建一条命名隧道
+
+```powershell
+cloudflared tunnel create surfcore-phone
+# 输出：Tunnel credentials written to C:\Users\<你>\.cloudflared\<隧道ID>.json
+# 记下这个 隧道ID 和 凭据 JSON 路径
+```
+
+### 4. 写 `%USERPROFILE%\.cloudflared\config.yml`
+
+```yaml
+tunnel: <隧道ID>
+credentials-file: C:\Users\<你>\.cloudflared\<隧道ID>.json
+ingress:
+  - hostname: wake.你的域名
+    service: http://127.0.0.1:8787
+  - service: http_status:404
+```
+
+> `ingress` 最后一条必须是兜底规则，否则 cloudflared 启动会报错退出。
+
+### 5. 给隧道绑域名（DNS 会自动加一条 CNAME）
+
+```powershell
+cloudflared tunnel route dns surfcore-phone wake.你的域名
+```
+
+### 6. 启动并做开机自启
+
+前台先验证一次：
+
+```powershell
+cloudflared tunnel --config "$env:USERPROFILE\.cloudflared\config.yml" run surfcore-phone
+```
+
+通了之后做常驻（导出包里已有 `runtimes\start-cloudflared.ps1` 和 `cloudflared-named.bat`，改成新机的隧道名/路径即可）：
+
+- 不要用 `cloudflared service install`——它生成的 Windows 服务 ImagePath 不带 `--config`，服务起来没有 ingress 规则，公网请求会 502（本机踩过）；
+- 用计划任务 `SurfCoreCloudflared`（登录时触发，跑 `start-cloudflared.ps1`，脚本内部用 WMI `Win32_Process.Create` 脱离启动 cloudflared）；
+- 验证：`schtasks /query /tn SurfCoreCloudflared` 状态 Ready，`cloudflared` 进程在跑。
+
+### 7. 验证
+
+```powershell
+# TOKEN 取自 repo\state\phone-token（桥接首次启动自动生成）
+curl.exe -H "x-wake-token: <TOKEN>" https://wake.你的域名/v1/ping
+# 期望：{"ok":true,"ts":...,"server":"pc"}
+```
+
+### 8. 两个必踩的坑
+
+- **UA 拦截**：Cloudflare Bot 检查会把默认 `Python-urllib` 的请求挡成 `403 error code: 1010`。手机端每个请求都要显式带普通 UA（如 `User-Agent: dshgo/1.0`）。
+- **临时地址**：没有域名时可以先跑 `cloudflared tunnel --url http://127.0.0.1:8787` 拿一个 `*.trycloudflare.com` 临时地址，每次重启都会变，只适合先验证连通性。
 
 ---
 

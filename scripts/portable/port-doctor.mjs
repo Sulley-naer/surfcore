@@ -98,6 +98,19 @@ for (const f of ['voice.json', 'asr.json', 'see-window.json']) {
 }
 const cfCfg = path.join(HOME, '.cloudflared', 'config.yml');
 check(exists(cfCfg), 'warn', '~/.cloudflared/config.yml', '公网隧道；凭据 JSON 需 tunnel login 重建');
+// config.yml 里的 credentials-file 指向隧道凭据（密钥，导出包故意不带）——缺了隧道起不来，必须显式提示
+if (exists(cfCfg)) {
+  try {
+    const yml = fs.readFileSync(cfCfg, 'utf8');
+    const m = yml.match(/credentials-file:\s*["']?([^"'\r\n]+)["']?/);
+    if (m) {
+      const cred = m[1].trim();
+      check(exists(cred), 'warn', 'Cloudflare 隧道凭据 JSON', `${cred}（导出包不含；需 tunnel login 重建或从旧机拷贝）`);
+    } else {
+      add('info', 'config.yml 未写 credentials-file，跳过凭据检查', '');
+    }
+  } catch { add('info', 'config.yml 读取失败，跳过凭据检查', ''); }
+}
 
 // 计划任务（登录自启）
 try {
