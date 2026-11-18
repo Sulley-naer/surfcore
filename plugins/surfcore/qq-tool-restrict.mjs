@@ -188,6 +188,9 @@ const SAFE_EXACT = new Set([
   'search_context',
   'acp_status',
   'acp_cache',
+  'purge_apply',
+  'purge_status',
+  'purge_revert',
 ])
 
 // 给「插件兼容性体检」读取的只读快照：不要在别处再抄一份白名单。
