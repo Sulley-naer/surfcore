@@ -134,13 +134,15 @@ export function resolveNodeExe() {
 
 /**
  * 定时自检配置（同样写在 ~/.dsh/surfcore/test-suites.json 的 `schedule` 段）：
- *   { "enabled": true, "intervalMinutes": 60, "tags": ["unit"], "onStart": true }
- * intervalMinutes=0 表示只 onStart、不定时。
+ *   { "enabled": true, "intervalMinutes": 360, "tags": ["unit"], "onStart": true }
+ * intervalMinutes=0 表示只 onStart、不定时；显式开启时最低 60 分钟（避免跑太勤烧钱）。
  */
 export function readSuiteSchedule({ file = USER_SUITES_FILE } = {}) {
   const user = readJson(file, null);
   const raw = user?.schedule && typeof user.schedule === 'object' ? user.schedule : {};
-  const minutes = Math.max(0, Math.min(24 * 60, Math.round(Number(raw.intervalMinutes) || 0)));
+  const wanted = Math.max(0, Math.min(24 * 60, Math.round(Number(raw.intervalMinutes) || 0)));
+  // 0 = 不定时；>0 时至少 60 分钟，防止被写成"每几分钟跑一遍全套回归"。
+  const minutes = wanted === 0 ? 0 : Math.max(60, wanted);
   return {
     enabled: raw.enabled !== false && (minutes > 0 || raw.onStart === true),
     intervalMinutes: minutes,

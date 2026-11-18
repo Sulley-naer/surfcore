@@ -176,6 +176,10 @@
     "autoReplyCheckMs": 30000,
     "agentPreset": "qq-chat-v2",
     "provideRecommendations": true,
+    "turnGuard": {
+      "maxSteps": 100,
+      "maxRepeatedErrors": 3
+    },
     "tools": {
       "getPrompt": true,
       "getUnread": true,

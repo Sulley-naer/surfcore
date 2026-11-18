@@ -131,6 +131,8 @@ SurfCore 的 DSH 插件不再只是「设置页 UI + 控制台 API」，还接�
 - **桥接运行状态卡片**：`GET /dsh-surfcore/api/bridge-status` 聚合桥接 `/api/status`（模式 / DSH 就绪 / 角色 / QQ / SnowLuma 连接与账号在线 / 主动搭话今日次数与下次时间），设置页只读展示。
 - **桥接功能开关**：`GET/POST /dsh-surfcore/api/features`，17 项布尔开关（13 个 `socialV2.tools.*` + `exec/ownerTasks/schedules/phoneWake` 的 `enabled`）直接在设置页读写 `config.json`（写前自动备份），改完重启桥接生效。
 - **qq_* 工具插件层注册（可热重挂）**：`config.json` 的 `socialV2.toolSource` 取 `plugin` 时，9 个 owner 控制工具（qq_run_code / qq_task_* / qq_schedule_* / qq_wake_phone / qq_phone_result）改由插件 `ctx.tools.register` 注册，MCP 侧自动跳过；改描述/参数后 `POST /dsh-surfcore/api/qq-tools/reload` 重挂即可，不必重启 DSH。默认仍是 `mcp`（行为不变，改 DSH 重启才加载新插件代码）。
+- **定时自检频率**：显式开启 `intervalMinutes` 时最低 60 分钟（防止每几分钟跑一遍全套回归）；设置页空闲轮询 5 分钟一次、桥接状态卡片 2 分钟一次。
+- **QQ 单轮步数上限**：`config.json` 的 `socialV2.turnGuard.maxSteps`（默认 40）已调到 **100**，`maxRepeatedErrors` 保持 3；改后重启桥接生效。
 - 新增文件：`plugins/surfcore/lib/{test-suites.js,test-runner.js,features.js,qq-tools.js}`；单测 `scripts/test-plugin-tools.mjs`（9 个工具定义/门控/schema + 17 项开关往返）。
 - 生效条件：插件由 DSH 进程内加载，**本次改动需重启 DSH 一次**；`toolSource=plugin` 的切换也在这之后做（先确认插件层工具出现，再切）。
 
