@@ -140,15 +140,18 @@ POST {BASE_URL}/v1/heartbeat
 **局限**：手机 WiFi 一关即不可达（`Destination host unreachable`、ARP 表消失）——
 这正是改用反向长轮询的原因（手机主动出站，不再依赖电脑能连手机）。
 
-### 待实现（电脑端）
+### 电脑端（2026-11-18 已实现）
 
-- [ ] `src/phone-wake.mjs`：队列 + 长轮询 + at-most-once + 超时告警（纯逻辑，可单测）
-- [ ] `src/bridge.js` 端点：`/v1/ping` `/v1/pull` `/v1/result` `/v1/heartbeat`（端口 8787）
-- [ ] token 生成（32 位 hex）与配置项（`socialV2.phoneWake`）
-- [ ] MCP 工具 `qq_wake_phone`（让她在 QQ 里把任务派给手机）
-- [ ] 端到端冒烟（小号任务「回一句 ping 成功」）
+- [x] `src/phone-wake.mjs`：队列 + 长轮询 + at-most-once + 超时告警（纯逻辑，`scripts/test-phone-wake.mjs` 10 节单测）
+- [x] `src/bridge.js` 端点：`/v1/ping` `/v1/pull` `/v1/result` `/v1/heartbeat`（端口 8787，`startPhoneWakeServer()`）
+- [x] token 生成（32 位 hex，config 未配则自动生成到 `state/phone-token`）与配置项（`socialV2.phoneWake`）
+- [x] MCP 工具 `qq_wake_phone`（QQ 私聊里把任务派给手机；端点 `POST /api/socialV2/wake-phone`）
+- [ ] 端到端冒烟（手机 agent 接上后：小任务「回一句 ping 成功」）
 - [ ] 外网阶段：Cloudflare Tunnel + 只改 `<BASE_URL>`
 
+> 服务端行为补充：队列持久化在 `state/phone-tasks.json`；桥接重启时「已投递未回结果」的任务标记为
+> `expired`（错误「桥接重启：已投递未回结果」）；已投递超过 `taskTimeoutMs` 未回结果会打
+> `[手机通道] ⚠️ 已投递未消费` 告警。`GET /v1/pull` 的 `wait` 上限由 `maxPullWaitMs`（默认 25s）封顶。
 ---
 
 ## 七、排障要点

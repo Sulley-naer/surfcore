@@ -50,6 +50,20 @@ import {
   summarize as summarizeOwnerTasks,
 } from './owner-tasks.mjs';
 import {
+  normalizePhoneWakeConfig,
+  normalizePhoneWakeState,
+  addPhoneTask,
+  nextPendingTask,
+  markDelivered,
+  completePhoneTask,
+  sweepTimeouts,
+  touchHeartbeat,
+  trimPhoneWakeState,
+  summarizePhoneWake,
+  taskById as phoneTaskById,
+  pendingTasks as phonePendingTasks,
+} from './phone-wake.mjs';
+import {
   normalizeScheduleConfig,
   normalizeScheduleState,
   addSchedule,
@@ -954,6 +968,7 @@ function loadConfig() {
         taskRun: true,
         taskStatus: true,
         taskCancel: true,
+        wakePhone: true,
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
@@ -1112,6 +1127,7 @@ function loadConfig() {
     taskRun: true,
     taskStatus: true,
     taskCancel: true,
+    wakePhone: true,
     setStickerRemark: false,
     stickerNote: true,
     collectSticker: true,
@@ -1159,6 +1175,8 @@ function loadConfig() {
   cfg.socialV2.ownerTasks = normalizeTaskConfig(cfg.socialV2.ownerTasks ?? {});
   // socialV2.schedules：日程/定时器（qq_schedule_*），行为参数 + 开关。
   cfg.socialV2.schedules = normalizeScheduleConfig(cfg.socialV2.schedules ?? {});
+  // socialV2.phoneWake：手机唤醒通道（反向长轮询），行为参数 + 开关。
+  cfg.socialV2.phoneWake = normalizePhoneWakeConfig(cfg.socialV2.phoneWake ?? {});
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
@@ -1555,6 +1573,57 @@ function saveOwnerTaskState() {
 // 唤醒 prompt 注入过的「待汇报」任务 id 快照：她给主人私聊发出消息即视为已汇报。
 let lastTaskReportIds = [];
 let lastTaskReportAt = 0;
+
+// —— 手机唤醒通道（反向长轮询）：状态文件 + 长轮询等待者。单写者：桥接。 ——
+const PHONE_WAKE_FILE = path.join(STATE_DIR, 'phone-tasks.json');
+const PHONE_TOKEN_FILE = path.join(STATE_DIR, 'phone-token');
+let phoneWakeState = normalizePhoneWakeState(readJsonSafe(PHONE_WAKE_FILE, null));
+function savePhoneWakeState() {
+  try { atomicWriteJson(PHONE_WAKE_FILE, phoneWakeState); } catch (error) { log('[手机通道] 状态写盘失败:', error?.message ?? error); }
+}
+const phoneWakeWaiters = new Set();
+let phoneWakeServer = null;
+
+/** 手机通道令牌：config 里显式配置优先；否则读/生成 state/phone-token（32 位 hex）。 */
+function phoneWakeToken() {
+  const explicit = String(cfg.socialV2?.phoneWake?.token ?? '').trim();
+  if (/^[A-Za-z0-9_-]{16,64}$/.test(explicit)) return explicit;
+  try {
+    const saved = String(fs.readFileSync(PHONE_TOKEN_FILE, 'utf8')).trim();
+    if (/^[A-Za-z0-9_-]{16,64}$/.test(saved)) return saved;
+  } catch {}
+  const token = crypto.randomBytes(16).toString('hex');
+  try { fs.writeFileSync(PHONE_TOKEN_FILE, token, { encoding: 'utf8' }); } catch (error) { log('[手机通道] 令牌落盘失败:', error?.message ?? error); }
+  log(`[手机通道] 已生成令牌（保存在 state/phone-token）：${token}`);
+  return token;
+}
+
+/** 有任务时叫醒长轮询等待者（按入队顺序先进先出）。 */
+function notifyPhoneWaiters() {
+  for (const waiter of [...phoneWakeWaiters]) {
+    const task = nextPendingTask(phoneWakeState);
+    if (!task) return;
+    markDelivered(phoneWakeState, task.id);
+    savePhoneWakeState();
+    clearTimeout(waiter.timer);
+    phoneWakeWaiters.delete(waiter);
+    log(`[手机通道] 投递任务 #${task.seq}「${task.title}」（${task.id}）`);
+    waiter.resolve(task);
+  }
+}
+
+/** 长轮询：等最多 ms 毫秒，返回任务或 null。 */
+function waitForPhoneTask(ms) {
+  if (!(ms > 0)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const waiter = { resolve, timer: null };
+    waiter.timer = setTimeout(() => {
+      phoneWakeWaiters.delete(waiter);
+      resolve(null);
+    }, ms);
+    phoneWakeWaiters.add(waiter);
+  });
+}
 
 // —— owner 日程/定时器（qq_schedule_*）：状态文件。单写者：桥接；插件只读。 ——
 const SCHEDULES_FILE = path.join(STATE_DIR, 'schedules.json');
@@ -4368,6 +4437,122 @@ async function main() {
   // 模式/角色/静默状态都存 state/*.json，桥接即时感知；此服务只读写这些文件。
   function v2ToolEnabled(flag) {
     return cfg.socialV2?.tools?.[flag] !== false;
+  }
+
+  /** 投递给手机的紧凑任务体（不带结果等内部字段）。 */
+  function phoneTaskPayload(task) {
+    if (!task) return null;
+    return { id: task.id, seq: task.seq, title: task.title, prompt: task.prompt, createdAt: task.createdAt, timeoutMs: task.timeoutMs };
+  }
+
+  /**
+   * 手机唤醒通道：独立 HTTP 服务（内网阶段 0.0.0.0:8787）。
+   * 手机端主动出站长轮询拉任务 → 本地执行 → 回传结果；电脑不需要能连到手机。
+   * 鉴权：所有请求带 `x-wake-token`，与 config.socialV2.phoneWake.token 或 state/phone-token 比对。
+   */
+  function startPhoneWakeServer() {
+    const pw = cfg.socialV2?.phoneWake;
+    if (!pw || pw.enabled === false) return;
+    const token = phoneWakeToken();
+    const server = http.createServer(async (req, res) => {
+      let url;
+      try { url = new URL(req.url ?? '/', `http://127.0.0.1:${pw.port}`); }
+      catch {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid-url' }));
+        return;
+      }
+      const sendJson = (obj, status = 200) => {
+        const body = JSON.stringify(obj);
+        res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body), 'cache-control': 'no-store' });
+        res.end(body);
+      };
+      const readJsonBody = () => new Promise((resolve, reject) => {
+        const chunks = [];
+        let total = 0;
+        const MAX_BODY = 256 * 1024;
+        req.on('data', (chunk) => {
+          total += chunk.length;
+          if (total > MAX_BODY) { reject(new Error('body too large')); req.destroy(); return; }
+          chunks.push(chunk);
+        });
+        req.on('end', () => {
+          try {
+            const text = Buffer.concat(chunks).toString('utf8').trim();
+            resolve(text ? JSON.parse(text) : {});
+          } catch (error) { reject(error); }
+        });
+        req.on('error', reject);
+      });
+      // 鉴权：令牌不对一律 401（不回显正确值）。
+      if (String(req.headers['x-wake-token'] ?? '').trim() !== token) {
+        sendJson({ ok: false, error: 'unauthorized' }, 401);
+        return;
+      }
+      try {
+        if (req.method === 'GET' && url.pathname === '/v1/ping') {
+          sendJson({ ok: true, ts: Math.floor(Date.now() / 1000), server: 'pc' });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/v1/pull') {
+          const waitSec = Math.max(0, Math.min(Number(url.searchParams.get('wait')) || 0, Math.floor(pw.maxPullWaitMs / 1000)));
+          const existing = nextPendingTask(phoneWakeState);
+          if (existing) {
+            markDelivered(phoneWakeState, existing.id);
+            savePhoneWakeState();
+            log(`[手机通道] 投递任务 #${existing.seq}「${existing.title}」（${existing.id}）`);
+            sendJson({ ok: true, task: phoneTaskPayload(existing) });
+            return;
+          }
+          const task = await waitForPhoneTask(waitSec * 1000);
+          sendJson({ ok: true, task: phoneTaskPayload(task) });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/v1/result') {
+          const body = await readJsonBody();
+          const id = String(body.id ?? '').trim();
+          if (!id) { sendJson({ ok: false, error: 'id 不能为空' }, 400); return; }
+          const done = completePhoneTask(phoneWakeState, {
+            id,
+            ok: body.ok !== false,
+            result: String(body.result ?? ''),
+            error: body.error == null ? '' : String(body.error),
+            durationMs: Number(body.durationMs) || 0,
+            device: String(body.device ?? ''),
+          });
+          if (!done.ok) { sendJson({ ok: false, error: done.reason }, done.reason === 'not-found' ? 404 : 409); return; }
+          savePhoneWakeState();
+          log(`[手机通道] 结果已回：${id} ${done.task.status}${done.task.summary ? `（${String(done.task.summary).slice(0, 80)}）` : ''}`);
+          sendJson({ ok: true });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/v1/heartbeat') {
+          const body = await readJsonBody();
+          touchHeartbeat(phoneWakeState, { device: String(body.device ?? 'dshgo'), note: String(body.note ?? '') });
+          savePhoneWakeState();
+          sendJson({ ok: true });
+          return;
+        }
+        sendJson({ ok: false, error: 'not-found' }, 404);
+      } catch (error) {
+        log(`[手机通道] 请求处理失败 ${url.pathname}:`, error?.message ?? error);
+        sendJson({ ok: false, error: 'internal' }, 500);
+      }
+    });
+    server.on('error', (error) => log(`[手机通道] 监听失败：${error?.message ?? error}`));
+    server.listen(pw.port, pw.host, () => {
+      log(`[手机通道] 已监听 http://${pw.host}:${pw.port}（手机端带 x-wake-token；令牌见 state/phone-token 或 config.socialV2.phoneWake.token）`);
+    });
+    phoneWakeServer = server;
+    // 已投递未消费：超过任务超时仍未回结果 → 标 expired 并告警。
+    setInterval(() => {
+      try {
+        const expired = sweepTimeouts(phoneWakeState);
+        if (!expired.length) return;
+        savePhoneWakeState();
+        for (const task of expired) log(`[手机通道] ⚠️ 已投递未消费： #${task.seq}「${task.title}」（${task.id}）`);
+      } catch (error) { log('[手机通道] 超时扫描异常:', error?.message ?? error); }
+    }, 30_000);
   }
 
   function startConsoleServer() {
@@ -7768,6 +7953,38 @@ async function main() {
           ownerAudit.append('qq_task_cancel', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { taskId, event: 'cancelled' }, ref: key });
           log(`[任务] 取消排队: ${taskId}`);
           sendJson({ ok: true, task: cancelled.task });
+          return;
+        }
+
+        // —— 手机唤醒通道：给她挂一条任务到手机上执行 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/wake-phone') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const title = String(body.title ?? '').trim();
+          const prompt = String(body.prompt ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (!title) { sendJson({ ok: false, error: 'title 不能为空' }, 400); return; }
+          if (!prompt) { sendJson({ ok: false, error: 'prompt 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (!agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (!v2ToolEnabled('wakePhone')) { sendJson({ ok: false, error: '工具未启用：qq_wake_phone' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (cfg.socialV2?.phoneWake?.enabled === false) { sendJson({ ok: false, error: '手机通道已关闭（socialV2.phoneWake.enabled=false）' }, 403); return; }
+          const added = addPhoneTask(phoneWakeState, { title, prompt, timeoutMs: body.timeoutMs, config: cfg.socialV2.phoneWake });
+          if (!added.ok) {
+            const reasonText = added.reason === 'queue-full'
+              ? `手机任务队列已满（最多 ${cfg.socialV2.phoneWake.maxQueue} 个），稍后再试`
+              : `创建失败：${added.reason}`;
+            ownerAudit.append('qq_wake_phone', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { rejected: added.reason, title }, ref: key });
+            sendJson({ ok: false, error: reasonText }, 429);
+            return;
+          }
+          savePhoneWakeState();
+          notifyPhoneWaiters();
+          ownerAudit.append('qq_wake_phone', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { taskId: added.task.id, event: 'queued', title }, ref: key });
+          log(`[手机通道] 入队: #${added.task.seq}「${title}」（${added.task.id}）`);
+          sendJson({ ok: true, task: phoneTaskPayload(added.task) });
           return;
         }
 
@@ -16741,6 +16958,7 @@ async function main() {
   startDshWatch();
   startSnowlumaWatch();
   startConsoleServer();
+  startPhoneWakeServer();
 
   await pumpMux();
 }
