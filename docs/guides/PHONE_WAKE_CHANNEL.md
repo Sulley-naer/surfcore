@@ -146,7 +146,8 @@ POST {BASE_URL}/v1/heartbeat
 - [x] `src/bridge.js` 端点：`/v1/ping` `/v1/pull` `/v1/result` `/v1/heartbeat`（端口 8787，`startPhoneWakeServer()`）
 - [x] token 生成（32 位 hex，config 未配则自动生成到 `state/phone-token`）与配置项（`socialV2.phoneWake`）
 - [x] MCP 工具 `qq_wake_phone`（QQ 私聊里把任务派给手机；端点 `POST /api/socialV2/wake-phone`）
-- [ ] 端到端冒烟（手机 agent 接上后：小任务「回一句 ping 成功」）
+- [x] MCP 工具 `qq_phone_result`（查手机任务结果；端点 `POST /api/socialV2/phone-result`）+ 唤醒 prompt 注入【手机任务】块
+- [x] 端到端冒烟（2026-11-18，2/2 成功：54s / 182s，设备 `dshgo`，结果 `37 × 23 = 851`）
 - [ ] 外网阶段：Cloudflare Tunnel + 只改 `<BASE_URL>`
 
 > 服务端行为补充：队列持久化在 `state/phone-tasks.json`；桥接重启时「已投递未回结果」的任务标记为

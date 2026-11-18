@@ -352,6 +352,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_task_status: 'taskStatus',
   qq_task_cancel: 'taskCancel',
   qq_wake_phone: 'wakePhone',
+  qq_phone_result: 'phoneResult',
   qq_schedule_add: 'scheduleAdd',
   qq_schedule_list: 'scheduleList',
   qq_schedule_cancel: 'scheduleCancel',
@@ -1376,6 +1377,31 @@ if (cfg.socialV2?.tools?.wakePhone !== false) {
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `派发手机任务失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.phoneResult !== false) {
+  server.tool(
+    'qq_phone_result',
+    '查看派给手机 agent 的任务结果。不传 taskId 时返回最近 5 条（含状态、结果摘要、耗时、设备）；传 taskId 返回那一条的完整结果。手机任务执行完后结果由手机回传，状态 done/failed/expired。仅管理员私聊可用。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      taskId: z.string().optional().describe('可选：手机任务 id（来自 qq_wake_phone 返回的 task.id）'),
+    },
+    async ({ key, token, taskId }) => {
+      try {
+        const data = await agentApi('/api/socialV2/phone-result', {
+          method: 'POST',
+          body: JSON.stringify({ key, ...(taskId ? { taskId: String(taskId) } : {}) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `查询手机任务失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
