@@ -29,7 +29,7 @@ import {
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
 import { ensureUserSuitesTemplate, loadTestSuites, readSuiteSchedule } from './test-suites.js';
-import { getCurrentRun, getRun, listRuns, readLastFailure, schedulerStatus, startRun, startScheduler as startTestScheduler } from './test-runner.js';
+import { getCurrentRun, getRun, listRuns, readLastFailure, schedulerStatus as getTestSchedulerStatus, startRun, startScheduler as startTestScheduler } from './test-runner.js';
 import { applyFeatureState, readFeatureState as readFeatureStateFrom } from './features.js';
 import { registerQqTools } from './qq-tools.js';
 import { discoverSnowLumaConnection } from '../../../src/snowluma-conn.js';
@@ -3372,7 +3372,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
       const { suites, source, file } = loadTestSuites();
       json(res, 200, {
         ok: true, suites, source, file, runs: listRuns(10), current: getCurrentRun(),
-        schedule: readSuiteSchedule(), scheduler: schedulerStatus(),
+        schedule: readSuiteSchedule(), scheduler: getTestSchedulerStatus(),
         lastFailure: readLastFailure(),
       });
       return;
