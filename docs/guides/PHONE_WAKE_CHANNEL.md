@@ -1,7 +1,14 @@
 # 手机唤醒通道（反向长轮询）
 
 > 目标：让 QQ 侧的她（或桌面侧的 agent）**把任务派给手机上的 dsh-Go agent 执行**。
-> 2026-11-17 调研 + 首次端到端验证；2026-11-18 定为「反向长轮询」方案，电脑端服务待实现。
+> 2026-11-17 调研 + 首次端到端验证；2026-11-18 定为「反向长轮询」方案，电脑端服务已实现。
+>
+> **公网地址（2026-11-18 起）**：`https://wake.xinzhi.stream`（Cloudflare 命名隧道，固定域名）。
+> 局域网地址 `http://192.168.1.122:8787` 仍可用；两者 token 相同（`state/phone-token`）。
+> 隧道由 `D:\surfcore\runtimes\start-cloudflared.ps1` 启动（登录自启任务 `SurfCoreCloudflared`），
+> 配置 `C:\Users\xin_zhi\.cloudflared\config.yml`（tunnel `surfcore-phone`）。
+> **注意**：Cloudflare 的 Bot 检查会拦 `Python-urllib` 之类的默认 UA（403 `error code: 1010`），
+> 客户端必须显式带一个普通 UA（如 `User-Agent: dshgo/1.0`）。
 
 ---
 
