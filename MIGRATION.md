@@ -143,6 +143,89 @@ curl.exe -H "x-wake-token: <TOKEN>" https://wake.你的域名/v1/ping
 
 ---
 
+## 三之三、DSH 插件（新机重装）
+
+**这一步 bootstrap 也不会替你做。** 插件装在用户目录、不随迁移包走（体积大、且含平台二进制），新机要按清单重装。
+
+### 装在哪
+
+```
+%USERPROFILE%\.dsh\profiles\desktop\
+  package.json     ← dependencies（版本）+ dsh.profile.bundles（哪些真的加载）
+  node_modules\    ← 实际代码
+```
+
+只写进 `dependencies` 但没进 `dsh.profile.bundles` 的包**不会加载**。用 `dsh plugin add` 装会自动两处都写。
+
+### 装法
+
+`dsh plugin` 只是把参数转发给 profile 目录里的 pnpm：
+
+```powershell
+# dsh 在 PATH 里就用 dsh；桌面版没加 PATH 时用绝对路径
+$dsh = "E:\DeepSeeK\resources\runtime\cli\bin\dsh.cmd"
+
+# 版本按旧机锁，避免新机自动升到不兼容版本
+& $dsh plugin --profile desktop add dsh-ops@0.4.4 billion-context@0.1.216 dsh-mnemon@0.5.46 cc-safety-net@2.7.1 ds-harness-remote@0.6.5 dsh-see-now@0.2.2
+& $dsh plugin --profile desktop add dsh-nekowhale-stickers@1.1.2 dsh-cost-meter@1.9.67 dsh-whale-widget@0.4.2 dsh-better-sidebar@0.28.2 dshmarket@1.73.20 "@michengai/dsh-codex-ui@2.0.9" dsh-plugin-wallpaper-engine@1.4.2
+& $dsh plugin --profile desktop add "github:kingcharleslzy-ai/dsh-purge#v1.7.20"
+```
+
+装完**重启 DSH**（插件在 DSH 进程内加载，不重启不生效）。
+
+### surfcore 本体是特例：junction，不是 npm 包
+
+repo 里的 `plugins\surfcore` 通过 junction 挂进 profile：
+
+```
+%USERPROFILE%\.dsh\plugins\surfcore                      →  <repo>\plugins\surfcore
+%USERPROFILE%\.dsh\profiles\desktop\node_modules\surfcore →  link:C:/Users/<你>/.dsh/plugins/surfcore
+```
+
+新机在 clone 完代码后跑：
+
+```powershell
+cd <repo>
+node scripts\setup-dsh.mjs                # 建 junction + 生成 presets + 注册 MCP
+& $dsh plugin --profile desktop install   # 把 link: 依赖装上
+```
+
+**不要** `dsh plugin add surfcore`——那样会从 npm 拉一个和本地魔改无关的版本。
+
+### 旧机插件清单（2026-11-19 快照）
+
+| 包 | 版本 | 作用 | 必需 |
+|---|---|---|---|
+| `surfcore` | 0.8.6 | QQ × B站 合体插件（本项目本体，junction） | **必需** |
+| `dsh-ops` | 0.4.4 | 本机文件/shell/PTC 工具（`ops_bash` 等来自它） | **必需** |
+| `dsh-see-now` | 0.2.2 | 屏幕/摄像头实时视觉感知；TTS/ASR 走 voxd + faster-whisper | 功能需要 |
+| `dsh-nekowhale-stickers` | 1.1.2 | 大肥鱼/GPT娘 表情包检索与模板 | 功能需要 |
+| `cc-safety-net` | 2.7.1 | 危险命令/密钥文件拦截（`ops_bash`、`qq_run_code` 的网关） | 建议 |
+| `billion-context` | 0.1.216 | 上下文压缩（长会话不爆窗） | 建议 |
+| `dsh-mnemon` | 0.5.46 | 记忆源/视图 | 建议 |
+| `dsh-cost-meter` | 1.9.67 | 会话/当日费用统计 | 可选 |
+| `dsh-whale-widget` | 0.4.2 | Web 右下角余额挂件 | 可选 |
+| `dsh-better-sidebar` | 0.28.2 | 侧栏文件树/编辑器/变更 | 可选 |
+| `@michengai/dsh-codex-ui` | 2.0.9 | 设置皮肤/侧栏/历史召回 UI | 可选 |
+| `dsh-plugin-wallpaper-engine` | 1.4.2 | 网页壁纸引擎背景 | 可选 |
+| `dshmarket` | 1.73.20 | 插件市场 UI | 可选 |
+| `dsh-purge-community` | 1.7.20 | 提示词/规则清洗与备份（github:kingcharleslzy-ai/dsh-purge） | 可选 |
+| `ds-harness-remote` | 0.6.5 | P2P 端到端加密远程访问 | 可选 |
+| `@deepseek-harness-tui/dsh-tui` | 0.17.0 | 终端 UI；与桌面版 0.2.1-rc.5 有版本告警 | 不用装 |
+
+### 想一字不差地恢复版本
+
+旧机的 profile `package.json` 只有几 KB，可单独备份；新机覆盖同路径后：
+
+```powershell
+& $dsh plugin --profile desktop install
+# surfcore 那行是 link: 本地路径 —— 先跑 setup-dsh 再 install
+```
+
+`dependencies` 和 `dsh.profile.bundles` 两段都要在，否则包装了也不加载。
+
+---
+
 ## 四、体检 + 收尾
 
 ```powershell

@@ -35,7 +35,7 @@
 - `scripts/portable/export-port.mjs`（新增）：导出数据包（`--voice none|refs|all`、`--mask`、`--no-zip`、`--dry-run`），逐文件 sha256 + 脱敏扫描进 `manifest.json`。**2026-11-18 扩展**：额外收 `runtimes/`（see-now adapter、faster-whisper 脚本、cloudflared 启动脚本）、`dsh-home/`（`~/.dsh/{voice,asr,see-window,see-now}.json`）、`cloudflared/`（`~/.cloudflared/config.yml`），manifest 增 `runtimesDir`/`cloudflaredConfig`/`scheduledTasks` 与「跳过的大文件」清单。
 - `scripts/portable/bootstrap-windows.ps1`（新增）：新机重建（装工具 / clone / 恢复数据 / **恢复 runtimes、~/.dsh 配置、隧道 config.yml** / **注册登录自启计划任务** `SurfCoreCloudflared`、`SurfCoreVoiceLocal` / 重建 venv）。
 - `scripts/portable/port-doctor.mjs`（新增）：迁移后体检（数据/路径/语音/ASR/SnowLuma + **runtimes、~/.dsh 四份 json、cloudflared config、两个计划任务、8787 监听**）。
-- `MIGRATION.md`（新增）：完整迁移手册（含新功能产物与 Cloudflare 凭据、手机令牌的新机处理）。
+- `MIGRATION.md`（新增）：完整迁移手册（含新功能产物与 Cloudflare 凭据、手机令牌的新机处理、**DSH 插件清单与重装命令**——见 `## 三之三、DSH 插件（新机重装）`）。
 
 **怎么迁移（`feat/portable` 分支上）**
 
