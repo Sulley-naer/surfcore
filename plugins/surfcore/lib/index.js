@@ -28,6 +28,9 @@ import {
   QQ_CONFIG, QQBOT_ROOT, STATE_DIR, UNIFIED_FILE, ensureDirs, findNodeExe, maskPath,
 } from './paths.js';
 import { resolvePersonaFile } from './persona.js';
+import { ensureUserSuitesTemplate, loadTestSuites, readSuiteSchedule } from './test-suites.js';
+import { getCurrentRun, getRun, listRuns, schedulerStatus, startRun, startScheduler as startTestScheduler } from './test-runner.js';
+import { applyFeatureState, readFeatureState as readFeatureStateFrom } from './features.js';
 import { discoverSnowLumaConnection } from '../../../src/snowluma-conn.js';
 import { findSnowLumaInstall as findSnowLumaInstallIn, normalizeSnowLumaInstall, snowLumaMissingReport } from './snowluma-install.js';
 import { buildInstallChecks, installOk, planDoctorFix } from './doctor.js';
@@ -177,8 +180,43 @@ function QQ_STATE_DIR() {
 export const name = 'surfcore';
 export const inject = ['webServer', 'connection', 'sessionController'];
 
+// ── 桥接侧功能开关（读写 <repo>/config.json 的 socialV2.*）──────────────────
+// 开关定义与纯逻辑在 ./features.js（可脱离 DSH 单测）；这里只负责读盘 / 备份 / 写盘。
+function readFeatureState() {
+  return readFeatureStateFrom(readJson(QQ_CONFIG, {}) ?? {});
+}
+
+function writeFeatureState(values) {
+  if (!values || typeof values !== 'object') return { ok: false, error: 'values 必须是对象' };
+  const cfg = readJson(QQ_CONFIG, null);
+  if (!cfg || typeof cfg !== 'object') return { ok: false, error: `读不到桥接配置：${maskPath(QQ_CONFIG)}` };
+  const result = applyFeatureState(cfg, values);
+  if (!result.ok) {
+    return { ok: false, error: result.error, unknown: result.unknown };
+  }
+  try { backupFile(QQ_CONFIG, 'qq-config-features'); } catch {}
+  writeJsonAtomic(QQ_CONFIG, cfg);
+  return {
+    ok: true,
+    changed: result.changed,
+    ids: result.ids,
+    unknown: result.unknown,
+    note: '已写入桥接 config.json；重启 QQ 桥接后生效。',
+  };
+}
+
 export function apply(ctx) {
   ensureDirs();
+  // 自检套件模板：不存在才写（用户可编辑 ~/.dsh/surfcore/test-suites.json）
+  try { ensureUserSuitesTemplate(); } catch (error) { pluginLog('[self-test] 写套件模板失败：', String(error?.message ?? error)); }
+  // 定时自检：读 test-suites.json 的 schedule 段（intervalMinutes / tags / onStart）
+  try {
+    const schedule = readSuiteSchedule();
+    if (schedule.enabled) {
+      const started = startTestScheduler(schedule);
+      pluginLog(`[self-test] 定时自检已启用：每 ${started.intervalMinutes || '—'} 分钟，tags=${started.tags.join('/')}，启动先跑=${started.onStart}`);
+    }
+  } catch (error) { pluginLog('[self-test] 定时自检启动失败：', String(error?.message ?? error)); }
 
   // 上次的"退出后应用"可能没跑起来（Electron 宿主没带 ELECTRON_RUN_AS_NODE）：
   // 这里重新排队，用户下次退出 DSH 就会应用（2026-10-28 反馈：点几次都还是旧版本）。
@@ -3305,6 +3343,42 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     const pathname = url.pathname;
     if (pathname === `${API_PREFIX}/overview`) { json(res, 200, await overview()); return; }
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
+    // —— 自检（声明式套件，配置在 ~/.dsh/surfcore/test-suites.json）——
+    if (pathname === `${API_PREFIX}/tests`) {
+      if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
+      const { suites, source, file } = loadTestSuites();
+      json(res, 200, {
+        ok: true, suites, source, file, runs: listRuns(10), current: getCurrentRun(),
+        schedule: readSuiteSchedule(), scheduler: schedulerStatus(),
+      });
+      return;
+    }
+    if (pathname === `${API_PREFIX}/tests/run`) {
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 POST' }); return; }
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch { json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); return; }
+      const result = startRun({ ids: body.ids ?? [], tags: body.tags ?? [] });
+      json(res, result.ok ? 200 : 409, result);
+      return;
+    }
+    if (pathname.startsWith(`${API_PREFIX}/tests/run/`)) {
+      if (req.method !== 'GET') { json(res, 405, { ok: false, error: '只支持 GET' }); return; }
+      const runId = decodeURIComponent(pathname.slice(`${API_PREFIX}/tests/run/`.length));
+      const run = getRun(runId);
+      if (!run) { json(res, 404, { ok: false, error: `没有这次自检：${runId}` }); return; }
+      json(res, 200, { ok: true, run });
+      return;
+    }
+    // —— 桥接侧功能开关（读写 config.json 的 socialV2.*）——
+    if (pathname === `${API_PREFIX}/features`) {
+      if (req.method === 'GET') { json(res, 200, { ok: true, features: readFeatureState(), file: maskPath(QQ_CONFIG) }); return; }
+      if (req.method !== 'POST') { json(res, 405, { ok: false, error: '只支持 GET/POST' }); return; }
+      let body = {};
+      try { body = JSON.parse(await readBody(req) || '{}'); } catch { json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); return; }
+      const result = writeFeatureState(body.values ?? body);
+      json(res, result.ok ? 200 : 400, result);
+      return;
+    }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
     if (pathname === `${API_PREFIX}/persona`) { await handlePersona(req, res); return; }
     if (pathname === `${API_PREFIX}/limit-mute`) { await handleLimitMute(req, res); return; }
