@@ -1581,8 +1581,8 @@ const phoneWakeWaiters = new Set();
 let phoneWakeServer = null;
 
 /** 手机通道令牌：config 里显式配置优先；否则读/生成 state/phone-token（32 位 hex）。 */
-function phoneWakeToken() {
-  const explicit = String(cfg.socialV2?.phoneWake?.token ?? '').trim();
+function phoneWakeToken(pwCfg) {
+  const explicit = String(pwCfg?.token ?? '').trim();
   if (/^[A-Za-z0-9_-]{16,64}$/.test(explicit)) return explicit;
   try {
     const saved = String(fs.readFileSync(PHONE_TOKEN_FILE, 'utf8')).trim();
@@ -4449,7 +4449,7 @@ async function main() {
   function startPhoneWakeServer() {
     const pw = cfg.socialV2?.phoneWake;
     if (!pw || pw.enabled === false) return;
-    const token = phoneWakeToken();
+    const token = phoneWakeToken(pw);
     const server = http.createServer(async (req, res) => {
       let url;
       try { url = new URL(req.url ?? '/', `http://127.0.0.1:${pw.port}`); }
