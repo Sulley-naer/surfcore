@@ -78,6 +78,17 @@
 - 2026-11-18 端到端已实测 2/2：任务入队同毫秒被手机拉走，54s / 182s 回传正确结果（设备 `dshgo`）。
 
 
+### 新增：DSH 插件层（自检面板 / 桥接状态 / qq_* 工具注册）
+
+SurfCore 的 DSH 插件不再只是「设置页 UI + 控制台 API」，还接管了三件事，减少"改一行就要重启 DSH"的依赖：
+
+- **设置页「自检」标签**：列出 `~/.dsh/surfcore/test-suites.json` 里的套件（内置 8 条：smoke / audit / voice-asr / qq-exec / owner-tasks / schedules / phone-wake / portable-doctor），一键跑「选中的 / 单元测试 / 离线全量 / 迁移体检」，结果表可展开 tail；**定时自检**（`schedule.enabled` + `intervalMinutes` + `tags` + `onStart`），**失败会写 `~/.dsh/surfcore/test-runs/last-failure.json`**，设置页红底横幅 + toast 提示，不再只是静默落盘。
+- **桥接运行状态卡片**：`GET /dsh-surfcore/api/bridge-status` 聚合桥接 `/api/status`（模式 / DSH 就绪 / 角色 / QQ / SnowLuma 连接与账号在线 / 主动搭话今日次数与下次时间），设置页只读展示。
+- **桥接功能开关**：`GET/POST /dsh-surfcore/api/features`，17 项布尔开关（13 个 `socialV2.tools.*` + `exec/ownerTasks/schedules/phoneWake` 的 `enabled`）直接在设置页读写 `config.json`（写前自动备份），改完重启桥接生效。
+- **qq_* 工具插件层注册（可热重挂）**：`config.json` 的 `socialV2.toolSource` 取 `plugin` 时，9 个 owner 控制工具（qq_run_code / qq_task_* / qq_schedule_* / qq_wake_phone / qq_phone_result）改由插件 `ctx.tools.register` 注册，MCP 侧自动跳过；改描述/参数后 `POST /dsh-surfcore/api/qq-tools/reload` 重挂即可，不必重启 DSH。默认仍是 `mcp`（行为不变，改 DSH 重启才加载新插件代码）。
+- 新增文件：`plugins/surfcore/lib/{test-suites.js,test-runner.js,features.js,qq-tools.js}`；单测 `scripts/test-plugin-tools.mjs`（9 个工具定义/门控/schema + 17 项开关往返）。
+- 生效条件：插件由 DSH 进程内加载，**本次改动需重启 DSH 一次**；`toolSource=plugin` 的切换也在这之后做（先确认插件层工具出现，再切）。
+
 ### 更新到上游新版本（怎么合并官方更新）
 
 **分支模型**（不要把自用改动合进 `main`，否则设置页「一键更新」的 `--ff-only` 会永久失效）：
