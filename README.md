@@ -104,6 +104,23 @@ node scripts\test-audit.mjs             # 106/108（历史失败 2 个属正常�
 - 配置：`config.json` 的 `socialV2.schedules`（`enabled/maxItems/summaryMaxChars/fireWindowMs`）与 `socialV2.tools.scheduleAdd / scheduleList / scheduleCancel`（默认开）。
 - 生效条件：同上（重启桥接 + 重启 DSH + `setup-dsh`）。
 
+### 新增：视觉感知融合（dsh-see-now：看得见 / 说得出 / 听得见）
+
+接入 [`dsh-see-now`](https://github.com/SAOS-3624/dsh-see-now) 插件，让 agent 能看屏幕（变化量筛选成宫格图）、用自己的声音朗读、听系统声音转文字。语音侧全部复用现有语音包（voxd 8765）与 faster-whisper（8766），不新增模型。
+
+- 插件：`dsh plugin --profile desktop add dsh-see-now`（本机 0.2.2），装完重启 DSH；工具 `see_now`、命令 `/seenow`。
+- 详见 **[docs/guides/SEE_NOW_VISION.md](docs/guides/SEE_NOW_VISION.md)**（三条链路、`~/.dsh/voice.json` / `asr.json` / `see-window.json` / `see-now.json` 配置、repo 外文件清单、重启要求、排障）。
+- repo 内改动只有一处：`plugins/surfcore/qq-tool-restrict.mjs` 的 `SAFE_EXACT` 放行 `see_now`。
+- 要点：`listen.source` 必须设 `device`（默认 `auto` 会抓进程回环导致静音）；TTS 适配器带预热规避 30 秒冷启动；改插件配置一律需重启 DSH。
+
+### 新增：手机唤醒通道（反向长轮询，待实现）
+
+让 QQ 侧的她把任务派给手机上的 dsh-Go agent 执行。**不走组网/直连**（Android 只允许一个 VPN，代理常驻时 Tailscale/ZeroTier 都起不来），改为手机主动出站拉任务：不占 VPN 槽、不要求电脑能连手机、蜂窝/WiFi 都行；外网阶段用 Cloudflare Tunnel 换 HTTPS 地址。
+
+- 协议 v1：`GET /v1/ping`、`GET /v1/pull?wait=25&after=<seq>`、`POST /v1/result`、`POST /v1/heartbeat`，头 `X-Wake-Token` + `X-Device: dshgo`；端口 8787；队列持久化 `state/phone-tasks.json`；at-most-once + 超时告警。
+- 详见 **[docs/guides/PHONE_WAKE_CHANNEL.md](docs/guides/PHONE_WAKE_CHANNEL.md)**（协议、语义、手机端验收清单、已完成的直连验证记录、待实现清单、排障）。
+- 2026-11-17 已验证手机侧能执行任务（投递→出结果约 7 秒）；电脑端服务与 `qq_wake_phone` 工具待实现。
+
 
 ### 更新到上游新版本（怎么合并官方更新）
 

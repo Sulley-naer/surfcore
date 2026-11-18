@@ -35,6 +35,8 @@
 | [guides/PURPOSE_OUTREACH.md](guides/PURPOSE_OUTREACH.md) | **目的机制（主动找主人）**：从近期 QQ+B站 记忆提炼「目的」→ 定期搭话（分享🧀/索取）；**载体 QQ / 桌宠**（2026-10-25）与互斥/回落、排程与硬闸门、素材/候选/提示词、内部备忘与 pending、状态文件、API、配置、预览/试一次、验证与回滚 | ✅ 2026-10-25 更新 |
 | [../plugins/surfcore/docs/PET.md](../plugins/surfcore/docs/PET.md) | **桌宠栏目**：安装/启动、**文本/语音对话**、气泡与「回复」按钮、主动搭话的桌宠载体、`pet-api` 本地令牌接口、数据位置与排障 | ✅ 2026-10-25 更新 |
 | [guides/CONVERSATION_CLOSURE.md](guides/CONVERSATION_CLOSURE.md) | **对话收尾判断**：六类信号 → continue/linger/close；`qq_close_conversation` 与 mark_read/潜水的边界；未答提问硬闸、冷却与重开、结束点记录、配置/验证/回滚 | ✅ 2026-10-24 新增 |
+| [guides/SEE_NOW_VISION.md](guides/SEE_NOW_VISION.md) | **视觉感知融合（dsh-see-now）**：看屏幕（变化量筛选宫格图）/ 用她的声音朗读（voxd TTS 适配器）/ 听系统声音转文字（faster-whisper 8766）；repo 外文件清单、四份配置、重启要求、锁屏/回环设备/冷启动排障 | ✅ 2026-11-17 新增 |
+| [guides/PHONE_WAKE_CHANNEL.md](guides/PHONE_WAKE_CHANNEL.md) | **手机唤醒通道（反向长轮询）**：为什么不用组网（Android 单 VPN 槽）、协议 v1（ping/pull/result/heartbeat）、at-most-once 与超时告警、手机端验收清单、直连方案验证记录、待实现清单 | ✅ 2026-11-18 新增 |
 
 ### 2026-10-26 全仓库梳理（新，建议按顺序读）
 
