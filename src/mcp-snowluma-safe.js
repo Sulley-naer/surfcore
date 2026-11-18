@@ -351,6 +351,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_task_run: 'taskRun',
   qq_task_status: 'taskStatus',
   qq_task_cancel: 'taskCancel',
+  qq_wake_phone: 'wakePhone',
   qq_schedule_add: 'scheduleAdd',
   qq_schedule_list: 'scheduleList',
   qq_schedule_cancel: 'scheduleCancel',
@@ -1348,6 +1349,33 @@ if (cfg.socialV2?.tools?.taskCancel !== false) {
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `撤任务失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.wakePhone !== false) {
+  server.tool(
+    'qq_wake_phone',
+    '把一条任务派给主人的手机 agent（手机上的 dsh 引擎）执行，返回任务 id；任务结果稍后可让主人看手机，或由主人转述。手机通过反向长轮询主动来取任务，所以电脑不需要能连到手机，只要求两边同时在线（内网同一局域网）。适合「帮我在手机上查一下/操作一下」这类必须落在手机上的事；一次只派一条、执行以手机实际为准，不要假设已完成。仅管理员私聊可用。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      title: z.string().describe('一句话标题，如「在手机上记一笔备忘录」'),
+      prompt: z.string().describe('给手机 agent 的完整指令（它会独立执行，不要依赖当前对话上下文）'),
+      timeoutMs: z.number().optional().describe('可选超时毫秒（默认 10 分钟）'),
+    },
+    async ({ key, token, title, prompt, timeoutMs }) => {
+      try {
+        const data = await agentApi('/api/socialV2/wake-phone', {
+          method: 'POST',
+          body: JSON.stringify({ key, title: String(title), prompt: String(prompt), ...(Number(timeoutMs) > 0 ? { timeoutMs: Number(timeoutMs) } : {}) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `派发手机任务失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );

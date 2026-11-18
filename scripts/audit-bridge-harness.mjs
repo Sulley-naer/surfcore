@@ -24,6 +24,7 @@ import * as voiceAsr from '../src/voice-asr.mjs';
 import * as qqExec from '../src/qq-exec.mjs';
 import * as ownerTasks from '../src/owner-tasks.mjs';
 import * as schedules from '../src/schedules.mjs';
+import * as phoneWake from '../src/phone-wake.mjs';
 import * as allowlist from '../src/allowlist.js';
 import * as callname from '../src/callname.js';
 import * as personaIdentity from '../src/persona-identity.js';
@@ -262,6 +263,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...qqExec,
     ...ownerTasks,
     ...schedules,
+    ...phoneWake,
     ...allowlist,
     ...callname,
     ...personaIdentity,

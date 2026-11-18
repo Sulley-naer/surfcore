@@ -37,6 +37,8 @@ const tests = [
   'test-owner-tasks.mjs',
   // owner 日程/定时器（qq_schedule_*）：时间解析/增删/到期触发/daily 推进/注入块（纯逻辑）。
   'test-schedules.mjs',
+  // 手机唤醒通道（qq_wake_phone）：队列/FIFO/at-most-once 投递/结果回传/超时扫描/重启恢复（纯逻辑）。
+  'test-phone-wake.mjs',
   // 出站身份闸：B站 评论/私信/动态/分享发送前拦主人/别人的账号标识（只许自己互认）。
   'test-identity-guard.mjs',
   // 观看历史：追加/去重/轮转/旧记忆回填/评分合并，以及 debrief·watch·角色迁移的接线契约。
