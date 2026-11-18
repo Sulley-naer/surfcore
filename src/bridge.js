@@ -969,6 +969,7 @@ function loadConfig() {
         taskStatus: true,
         taskCancel: true,
         wakePhone: true,
+        phoneResult: true,
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
@@ -1128,6 +1129,7 @@ function loadConfig() {
     taskStatus: true,
     taskCancel: true,
     wakePhone: true,
+    phoneResult: true,
     setStickerRemark: false,
     stickerNote: true,
     collectSticker: true,
@@ -1583,6 +1585,8 @@ function savePhoneWakeState() {
 }
 const phoneWakeWaiters = new Set();
 let phoneWakeServer = null;
+// 已注入过唤醒 prompt 的手机任务结果 id（汇报一次就够，避免每轮重复）。
+let lastPhoneReportIds = [];
 
 /** 手机通道令牌：config 里显式配置优先；否则读/生成 state/phone-token（32 位 hex）。 */
 function phoneWakeToken(pwCfg) {
@@ -4443,6 +4447,31 @@ async function main() {
   function phoneTaskPayload(task) {
     if (!task) return null;
     return { id: task.id, seq: task.seq, title: task.title, prompt: task.prompt, createdAt: task.createdAt, timeoutMs: task.timeoutMs };
+  }
+
+  /** 手机任务结果块：给她醒来时看的最近结果（done/expired/failed 且本会话未汇报过）。 */
+  function phoneResultBlock(maxItems = 3) {
+    try {
+      const queue = phoneWakeState?.queue ?? [];
+      const finished = queue
+        .filter((t) => t.status === 'done' || t.status === 'expired' || t.status === 'failed')
+        .filter((t) => !lastPhoneReportIds.includes(t.id))
+        .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
+        .slice(0, maxItems);
+      const pending = phonePendingTasks(phoneWakeState).length;
+      const delivered = queue.filter((t) => t.status === 'delivered').length;
+      if (!finished.length && !pending && !delivered) return '';
+      const lines = [];
+      for (const t of finished) {
+        const label = t.status === 'done' ? '完成' : (t.status === 'expired' ? '超时未回' : '失败');
+        const body = String(t.result ?? '').replace(/\s+/g, ' ').slice(0, 160);
+        lines.push(`· #${t.seq}「${t.title}」${label}${body ? `：${body}` : ''}`);
+      }
+      if (delivered) lines.push(`· 手机执行中（${delivered} 个）`);
+      if (pending) lines.push(`· 等待手机取走（${pending} 个）`);
+      const text = `【手机任务】\n${lines.join('\n')}\n向主人汇报手机任务结果（有结果就直接说结果，没结果就说明进度），再回应其他内容。`;
+      return text.length > 500 ? text.slice(0, 500) : text;
+    } catch { return ''; }
   }
 
   /**
@@ -7985,6 +8014,53 @@ async function main() {
           ownerAudit.append('qq_wake_phone', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { taskId: added.task.id, event: 'queued', title }, ref: key });
           log(`[手机通道] 入队: #${added.task.seq}「${title}」（${added.task.id}）`);
           sendJson({ ok: true, task: phoneTaskPayload(added.task) });
+          return;
+        }
+
+        // —— 手机任务结果：查某个任务 / 看最近几条 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/phone-result') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (!agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (!v2ToolEnabled('phoneResult')) { sendJson({ ok: false, error: '工具未启用：qq_phone_result' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          const taskId = String(body.taskId ?? '').trim();
+          if (taskId) {
+            const task = phoneTaskById(phoneWakeState, taskId);
+            if (!task) { sendJson({ ok: false, error: `未找到手机任务：${taskId}` }, 404); return; }
+            sendJson({
+              ok: true,
+              task: {
+                ...phoneTaskPayload(task),
+                status: task.status,
+                result: task.result,
+                error: task.error,
+                durationMs: task.durationMs,
+                device: task.device,
+                deliveredAt: task.deliveredAt,
+                finishedAt: task.finishedAt,
+              },
+            });
+            return;
+          }
+          const queue = phoneWakeState.queue ?? [];
+          const recent = [...queue]
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+            .slice(0, 5)
+            .map((t) => ({
+              id: t.id, seq: t.seq, title: t.title, status: t.status,
+              result: String(t.result ?? '').slice(0, 300), error: t.error,
+              durationMs: t.durationMs, device: t.device,
+            }));
+          sendJson({
+            ok: true,
+            pending: phonePendingTasks(phoneWakeState).length,
+            delivered: queue.filter((t) => t.status === 'delivered').length,
+            recent,
+          });
           return;
         }
 
@@ -14381,7 +14457,15 @@ async function main() {
       lastTaskReportIds = pendingReports(ownerTaskState).map((t) => t.id);
       lastTaskReportAt = Date.now();
     }
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + taskLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    // 手机任务：结果回来时注入一次，让她自然醒来先汇报手机那边发生了什么。
+    const phoneText = phoneResultBlock();
+    const phoneLine = phoneText ? `${phoneText}\n\n` : '';
+    if (phoneLine) {
+      lastPhoneReportIds = (phoneWakeState?.queue ?? [])
+        .filter((t) => t.status === 'done' || t.status === 'expired' || t.status === 'failed')
+        .map((t) => t.id);
+    }
+    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + taskLine + phoneLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -14390,6 +14474,7 @@ async function main() {
       bili: biliLine.length,
       memory: memoryCardLine.length,
       task: taskLine.length,
+      phone: phoneLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
       antiAi: antiAiLine.length,
