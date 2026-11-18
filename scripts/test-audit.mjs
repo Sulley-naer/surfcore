@@ -39,6 +39,8 @@ const tests = [
   'test-schedules.mjs',
   // 手机唤醒通道（qq_wake_phone）：队列/FIFO/at-most-once 投递/结果回传/超时扫描/重启恢复（纯逻辑）。
   'test-phone-wake.mjs',
+  // 插件层工具（qq_* 注册/开关/schema）与桥接功能开关（17 项）的离线回归。
+  'test-plugin-tools.mjs',
   // 出站身份闸：B站 评论/私信/动态/分享发送前拦主人/别人的账号标识（只许自己互认）。
   'test-identity-guard.mjs',
   // 观看历史：追加/去重/轮转/旧记忆回填/评分合并，以及 debrief·watch·角色迁移的接线契约。
