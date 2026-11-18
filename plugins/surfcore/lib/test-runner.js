@@ -15,6 +15,8 @@ import { TEST_RUNS_DIR, loadTestSuites, resolveNodeExe } from './test-suites.js'
 
 const MAX_TAIL_LINES = 400;
 const MAX_RUNS_KEPT = 30;
+// 最近一次失败的标记文件：设置页轮询它来弹提示（插件无法主动推 toast 给已关闭的页面）。
+const LAST_FAILURE_FILE = path.join(TEST_RUNS_DIR, 'last-failure.json');
 
 let currentRun = null;
 
@@ -35,6 +37,35 @@ function persist(run) {
   try { fs.writeFileSync(file, JSON.stringify(run, null, 2), 'utf8'); } catch {}
   run.file = file;
   return file;
+}
+
+/** 记下最近一次失败（供设置页提示），成功时清空。 */
+function writeFailureMarker(run) {
+  ensureRunsDir();
+  try {
+    const failed = (run.suites ?? []).filter((s) => s.status !== 'pass');
+    if (!failed.length) {
+      if (fs.existsSync(LAST_FAILURE_FILE)) fs.unlinkSync(LAST_FAILURE_FILE);
+      return;
+    }
+    const payload = {
+      runId: run.id,
+      finishedAt: run.finishedAt,
+      summary: run.summary,
+      suites: failed.map((s) => ({ id: s.id, status: s.status, exitCode: s.exitCode ?? null })),
+    };
+    fs.writeFileSync(LAST_FAILURE_FILE, JSON.stringify(payload, null, 2), 'utf8');
+  } catch {}
+}
+
+/** 读最近一次失败标记（没有返回 null）。 */
+export function readLastFailure() {
+  try {
+    const raw = fs.readFileSync(LAST_FAILURE_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 function pruneOldRuns() {
@@ -161,6 +192,7 @@ export function startRun({ ids = [], tags = [] } = {}) {
     run.finishedAt = nowIso();
     run.status = run.summary.fail ? 'fail' : 'pass';
     persist(run);
+    writeFailureMarker(run);
     pruneOldRuns();
     currentRun = null;
   })().catch((error) => {
@@ -169,6 +201,7 @@ export function startRun({ ids = [], tags = [] } = {}) {
       currentRun.finishedAt = nowIso();
       currentRun.error = String(error?.message ?? error);
       persist(currentRun);
+      writeFailureMarker(currentRun);
     }
     currentRun = null;
   });

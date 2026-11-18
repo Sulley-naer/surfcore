@@ -361,6 +361,10 @@ const TOOL_CONFIG_FLAGS = {
   qq_sticker_note: 'stickerNote',
   qq_set_sticker_remark: 'setStickerRemark',
 };
+/** config.json 的 socialV2.toolSource === 'plugin' 时，这 9 个 owner 控制工具改由 DSH 插件层注册
+ *（plugins/surfcore/lib/qq-tools.js），MCP 侧必须跳过，避免同名工具重复注册。 */
+const ownerToolsInPlugin = cfg.socialV2?.toolSource === 'plugin';
+
 const TOOL_PROFILE = String(cfg.socialV2?.toolProfile || (cfg.socialV2?.tools?.getSnapshot === false ? 'full' : 'balanced'));
 const PROFILE_HIDDEN = {
   balanced: new Set([
@@ -1254,7 +1258,7 @@ if (cfg.socialV2?.tools?.sendImage !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.runCode !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.runCode !== false) {
   server.tool(
     'qq_run_code',
     '在管理员本机执行命令并返回输出（约 90 秒超时，只适合短命令；耗时任务用 qq_task_run 挂后台）。仅管理员私聊可用；黑名单模式：默认放行任意命令，只拦破坏性指令，可读写文件、改配置。Windows cmd 没有 ls/cat，用 dir/type。注意：findstr/grep 没搜到内容时退出码是 1，属正常「未命中」——工具会把它标成成功并在 output 里说明，不要重复重试同一条命令（换查询词或直接读代码）。',
@@ -1279,7 +1283,7 @@ if (cfg.socialV2?.tools?.runCode !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.taskRun !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.taskRun !== false) {
   server.tool(
     'qq_task_run',
     '把一个长任务挂到后台队列执行，立即结束当前对话回合、不占用消息通道。适合下载、安装环境、构建这类耗时长的命令（一问一答的 qq_run_code 只适合 60 秒内的命令）。最多 2 个并行、排队最多 10 个（超出会被拒绝）。命令默认黑名单模式（放行任意命令、只拦破坏性指令）。执行日志会写到文件（对话里只报日志路径，不要把日志正文塞回对话）。任务完成后，你会在唤醒时收到【任务】汇报块：先向主人汇报任务结果、再回应其他内容；失败或需要主人拍板的任务会当场主动通知主人。参数：title 一句话标题（如「下载 faster-whisper 模型」）；command 要跑的命令；timeoutMs 可选超时毫秒（默认 30 分钟、上限 6 小时）。',
@@ -1306,7 +1310,7 @@ if (cfg.socialV2?.tools?.taskRun !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.taskStatus !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.taskStatus !== false) {
   server.tool(
     'qq_task_status',
     '查看后台任务队列：运行中 / 排队中 / 待汇报的任务与最近历史（含日志路径）。适合主人问「任务跑得怎么样了」时用。仅管理员私聊可用。',
@@ -1330,7 +1334,7 @@ if (cfg.socialV2?.tools?.taskStatus !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.taskCancel !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.taskCancel !== false) {
   server.tool(
     'qq_task_cancel',
     '撤销一个还在排队（未开始执行）的任务。运行中的任务第一版不支持喊停。taskId 用 qq_task_status 返回的 id（如 t3）。仅管理员私聊可用。',
@@ -1355,7 +1359,7 @@ if (cfg.socialV2?.tools?.taskCancel !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.wakePhone !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.wakePhone !== false) {
   server.tool(
     'qq_wake_phone',
     '把一条任务派给主人的手机 agent（手机上的 dsh 引擎）执行，返回任务 id；任务结果稍后可让主人看手机，或由主人转述。手机通过反向长轮询主动来取任务，所以电脑不需要能连到手机，只要求两边同时在线（内网同一局域网）。适合「帮我在手机上查一下/操作一下」这类必须落在手机上的事；一次只派一条、执行以手机实际为准，不要假设已完成。仅管理员私聊可用。',
@@ -1382,7 +1386,7 @@ if (cfg.socialV2?.tools?.wakePhone !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.phoneResult !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
   server.tool(
     'qq_phone_result',
     '查看派给手机 agent 的任务结果。不传 taskId 时返回最近 5 条（含状态、结果摘要、耗时、设备）；传 taskId 返回那一条的完整结果。手机任务执行完后结果由手机回传，状态 done/failed/expired。仅管理员私聊可用。',
@@ -1407,7 +1411,7 @@ if (cfg.socialV2?.tools?.phoneResult !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.scheduleAdd !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.scheduleAdd !== false) {
   server.tool(
     'qq_schedule_add',
     '把一件事排到某个时间点：到点桥接会唤醒你，把「该做这件事了」塞进你的指令里，你再用自己的工具去执行（比如刷 B 站/搜热点，做完把链接发给主人）。适合「晚上 8 点去刷两条 B 站，把链接甩给你」这类日程。time 用 "HH:mm" 或 "HH:mm:ss"（24 小时制；今天这个点已过就排到明天），也可以传绝对毫秒时间戳。repeat="daily" 表示每天同一时刻重复（适合「每天下班甩链接」），默认一次性。仅管理员私聊可用。到点前后 `qq_schedule_list` 可查。',
@@ -1435,7 +1439,7 @@ if (cfg.socialV2?.tools?.scheduleAdd !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.scheduleList !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.scheduleList !== false) {
   server.tool(
     'qq_schedule_list',
     '查看你安排的所有日程：待触发的（按时间排序）、已完成的、已取消的。仅管理员私聊可用。',
@@ -1459,7 +1463,7 @@ if (cfg.socialV2?.tools?.scheduleList !== false) {
   );
 }
 
-if (cfg.socialV2?.tools?.scheduleCancel !== false) {
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.scheduleCancel !== false) {
   server.tool(
     'qq_schedule_cancel',
     '取消一条日程（一次性或每天重复的都行）。scheduleId 用 qq_schedule_list 返回的 id（如 s3）。仅管理员私聊可用。',
