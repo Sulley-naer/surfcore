@@ -5148,9 +5148,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         } catch {}
       }, []);
       useEffect(() => { load(); loadFeatures(); loadBridge(); }, [load, loadFeatures, loadBridge]);
-      // 桥接状态：30 秒刷新（只读聚合，成本很低）。
+      // 桥接状态：2 分钟刷新（只读聚合，没必要太勤）。
       useEffect(() => {
-        const t = setInterval(() => { loadBridge(); }, 30000);
+        const t = setInterval(() => { loadBridge(); }, 120000);
         return () => clearInterval(t);
       }, [loadBridge]);
 
@@ -5158,14 +5158,14 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       useEffect(() => {
         const running = Boolean(data?.current?.id);
         if (!running) return undefined;
-        const t = setInterval(() => { load(); }, 2500);
+        const t = setInterval(() => { load(); }, 5000);
         return () => clearInterval(t);
       }, [data, load]);
 
       // 空闲时低频轮询：定时自检跑完（尤其失败）要能在这里弹出来。
       useEffect(() => {
         if (data?.current?.id) return undefined;
-        const t = setInterval(() => { load(); }, 60000);
+        const t = setInterval(() => { load(); }, 300000);
         return () => clearInterval(t);
       }, [data?.current?.id, load]);
 
