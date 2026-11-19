@@ -14461,7 +14461,10 @@ async function main() {
         .filter((t) => t.status === 'done' || t.status === 'expired' || t.status === 'failed')
         .map((t) => t.id);
     }
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + taskLine + phoneLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    // 压缩规范：billion-context 的 compress 一次至少要压 5000 字符；小范围会报
+    // "Total compressible content too small"，那是正常提示、不是故障。不说清楚她会反复重试（L3 止血）。
+    const compressLine = '【压缩规范】compress 工具一次要求压缩的内容 ≥5000 字符。如果它报「Total compressible content too small」或「No eligible message ranges」，说明当前没有够大的可压缩范围——这是正常提示，不要重试、不要换更小的范围、也不要当成出错；直接继续当前工作即可。\n\n';
+    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + taskLine + phoneLine + compressLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -14471,6 +14474,7 @@ async function main() {
       memory: memoryCardLine.length,
       task: taskLine.length,
       phone: phoneLine.length,
+      compress: compressLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
       antiAi: antiAiLine.length,
