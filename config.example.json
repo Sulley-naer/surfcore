@@ -372,6 +372,12 @@
       "maxBytes": 8388608,
       "maxPixels": 64000000,
       "maxCount": 5
+    },
+    "world": {
+      "enabled": false,
+      "worldId": "default",
+      "worldsDir": "",
+      "sayTimeoutMs": 8000
     }
   },
   "webSearch": {
