@@ -3904,12 +3904,18 @@ async function main() {
         dshReady = true;
         lastMode = currentMode;
         log(`DSH 已就绪（模式: ${currentMode}）`);
+        // 世界模式：生活线（闹钟/主动找人/每日回顾）由 dsh-world 自己负责，
+        // 这里关掉 SurfCore 的主动搭话与早安，避免同一句话从两个地方发出去。
+        const worldMode = cfg.socialV2?.world?.enabled === true;
+        if (worldMode) log('[世界] 混合模式：QQ 私聊交给家会话；SurfCore 的主动搭话/早安已让位给世界生活线');
         // 每天定时早安（DSH 在线才排定；桥接重启会重新排）
-        try { scheduleMorningGreeting(); } catch (error) { log(`[早安] 排定失败：${error?.message ?? error}`); }
+        if (!worldMode) {
+          try { scheduleMorningGreeting(); } catch (error) { log(`[早安] 排定失败：${error?.message ?? error}`); }
+        }
         // 在线时每群每小时最多主动 @ 一次
         try { startProactiveScheduler(); } catch (error) { log(`[搭话] 启动失败：${error?.message ?? error}`); }
         // 目的机制：定期从近期记忆里提炼目的，主动私聊主人（默认开，可关）。
-        if (cfg.purpose?.enabled !== false) {
+        if (cfg.purpose?.enabled !== false && !worldMode) {
           try { startPurposeLoop(); } catch (error) { log(`[目的] 启动失败：${error?.message ?? error}`); }
         }
         // owner 后台任务：启动时推进队列（上次重启中断的 running 已被 normalizeTaskState 标 failed，
@@ -8061,6 +8067,27 @@ async function main() {
             delivered: queue.filter((t) => t.status === 'delivered').length,
             recent,
           });
+          return;
+        }
+
+        // —— dsh-world → QQ：她在家里的回复 / 主动找人的话，经 outlets 推到这里 ——
+        // 鉴权：控制台全局令牌（dsh-world 的 outlets 用 ?token=<consoleToken> 带上）。
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/world-reply') {
+          const body = await readBody();
+          const worldCfg = cfg.socialV2?.world ?? {};
+          if (worldCfg.enabled === false) { sendJson({ ok: false, error: '世界桥未启用' }, 403); return; }
+          const ownerKey = `private:${String(cfg.ownerQQ ?? '')}`;
+          const kind = String(body.kind ?? 'reply');
+          const replyText = String(body.text ?? '').trim();
+          const images = Array.isArray(body.images) ? body.images.filter((u) => typeof u === 'string').slice(0, 3) : [];
+          if (!replyText && images.length === 0) { sendJson({ ok: true, skipped: 'empty' }); return; }
+          if (kind === 'busy') { sendJson({ ok: true, skipped: 'busy' }); return; }
+          if (replyText) sendToQQ(ownerKey, replyText);
+          for (const image of images) {
+            void sendImageV2({ key: ownerKey, image }).catch((error) => log('[世界] 图片转发到 QQ 失败：', error?.message ?? error));
+          }
+          appendActivity(`${ownerKey} [世界] ${kind === 'reach' ? '主动找人' : '回复'}已转发到 QQ（${replyText.slice(0, 30)}）`);
+          sendJson({ ok: true });
           return;
         }
 
@@ -15368,6 +15395,52 @@ async function main() {
     } catch {}
   }
 
+  // ── dsh-world 桥接（混合模式）────────────────────────────────────────────
+  // 主人的私聊交给 dsh-world 的「家会话」：那边有原文记忆、日记、生活线，她会自己记、
+  // 自己安排；她在家里的回复由插件 outlets 推回 /api/socialV2/world-reply，再发到 QQ。
+  // 这块只负责“转话”，语音转写 / TTS / 指令 / 任务 / 手机通道仍走 SurfCore 自己。
+  const WORLD_BRIDGE_CACHE_MS = 10_000;
+  let worldBridgeCache = { at: 0, info: null, error: '' };
+  function worldBridgeInfo(cfg) {
+    const w = cfg.socialV2?.world ?? {};
+    const worldsDir = String(w.worldsDir || path.join(os.homedir(), '.dsh', 'worlds'));
+    const worldId = String(w.worldId || 'default');
+    const file = path.join(worldsDir, worldId, 'bridge.json');
+    const now = Date.now();
+    if (now - worldBridgeCache.at < WORLD_BRIDGE_CACHE_MS) return worldBridgeCache;
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      const info = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+      worldBridgeCache = { at: now, info, error: '' };
+    } catch (error) {
+      worldBridgeCache = { at: now, info: null, error: `${file} 读不到：${error?.message ?? error}` };
+    }
+    return worldBridgeCache;
+  }
+  async function worldSay(textValue, cfg) {
+    const w = cfg.socialV2?.world ?? {};
+    const { info, error } = worldBridgeInfo(cfg);
+    if (!info?.origin || !info?.sayPath || !info?.token) {
+      return { ok: false, error: error || '世界桥还没写出来（世界还没「开始」？）' };
+    }
+    const body = String(textValue ?? '').trim().slice(0, 2000);
+    if (!body) return { ok: false, error: '空消息' };
+    const timeoutMs = Number(w.sayTimeoutMs) > 0 ? Number(w.sayTimeoutMs) : 8000;
+    try {
+      const res = await fetch(String(info.origin).replace(/\/+$/, '') + String(info.sayPath), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-dsh-world-token': String(info.token) },
+        body: JSON.stringify({ text: body }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return { ok: false, error: `她家里没收下（HTTP ${res.status}）` };
+      return { ok: true, id: String(data?.id ?? '') };
+    } catch (err) {
+      return { ok: false, error: `连不上世界桥：${err?.message ?? err}` };
+    }
+  }
+
   // QQ 消息 → DSH prompt
   async function handleIncoming(kind, id, event, cfg) {
     const key = convKey(kind, id);
@@ -15445,6 +15518,19 @@ async function main() {
       : '私聊';
     // 记忆卡原料：在静默/审批/命令等分支之前记录，避免「主人说的话没进记忆」。
     recordMemoryInboxEvent({ key, kind, event, plainContent, textContent, isOwner, quoteTargetIsSelf });
+    // 混合模式：主人私聊交给 dsh-world 的家会话；送不进去再回退到 SurfCore 自己回。
+    if (kind === 'private' && isOwner && cfg.socialV2?.world?.enabled) {
+      const worldText = String(textContent ?? '').trim() || (quoteTargetIsSelf ? '（只引用了一条消息，没有文字）' : '');
+      if (worldText) {
+        const sent = await worldSay(worldText, cfg);
+        if (sent.ok) {
+          appendActivity(`${key} [世界] 已送进家会话（${worldText.slice(0, 40)}）`);
+          logThrottled(`world-fwd:${key}`, 60_000, `[世界] 已把主人的话送进家会话`);
+          return;
+        }
+        log(`[世界] 送进家失败，回退 SurfCore 自己回：${sent.error}`);
+      }
+    }
     if (kind === 'group') {
       recordFishWindow(key, displayName, event.user_id, { isOwner });
     }
