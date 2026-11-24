@@ -8086,6 +8086,7 @@ async function main() {
               sendToQQ(ownerKey, bursts[i]);
             }
           }
+          if (replyText) recordSelfMemoryEvent(ownerKey, replyText);
           for (const image of images) {
             void sendImageV2({ key: ownerKey, image }).catch((error) => log('[世界] 图片转发到 QQ 失败：', error?.message ?? error));
           }
@@ -12713,6 +12714,15 @@ async function main() {
     const keepMs = Number(cfg.socialV2?.schedules?.fireWindowMs) || 5 * 60 * 1000;
     lastScheduleFires = lastScheduleFires.filter((f) => now - Number(f.at) < keepMs);
     // 唤醒她自己来执行：prompt 里带【日程】块（buildWakePromptV2 的 reason='schedule' 分支）。
+    const firedLines = lastScheduleFires.map((f) => `#${f.seq}「${f.title}」${f.description ? `：${f.description}` : ''}`);
+    if (cfg.socialV2?.world?.enabled === true) {
+      // 世界模式：日程到点也走家会话，避免 SurfCore 与世界的两张嘴同时开。
+      const sayText = `【日程】到点了：\n${firedLines.join('\n')}\n去做吧，做完按你自己的方式跟主人说一声。`;
+      void worldSay(sayText, cfg)
+        .then((result) => { if (result && result.ok === false) log(`[日程] 送进家会话失败：${result.error ?? '未知原因'}`); })
+        .catch((error) => log(`[日程] 送进家会话异常：${error?.message ?? error}`));
+      return;
+    }
     deliverPrompt(ownerKey, '', { wakeReason: 'schedule' }).catch((error) => log(`[日程] 唤醒失败: ${error?.message ?? error}`));
   }
 
