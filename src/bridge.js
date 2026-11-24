@@ -8082,7 +8082,14 @@ async function main() {
           const images = Array.isArray(body.images) ? body.images.filter((u) => typeof u === 'string').slice(0, 3) : [];
           if (!replyText && images.length === 0) { sendJson({ ok: true, skipped: 'empty' }); return; }
           if (kind === 'busy') { sendJson({ ok: true, skipped: 'busy' }); return; }
-          if (replyText) sendToQQ(ownerKey, replyText);
+          if (replyText) {
+            // 世界那边的回复往往是整段；QQ 上按人样拆成几条短消息，连着发（reserved2 的“一句一句”）。
+            const bursts = splitHumanBurst(replyText);
+            for (let i = 0; i < bursts.length; i += 1) {
+              if (i > 0) await sleep(320 + Math.floor(Math.random() * 260));
+              sendToQQ(ownerKey, bursts[i]);
+            }
+          }
           for (const image of images) {
             void sendImageV2({ key: ownerKey, image }).catch((error) => log('[世界] 图片转发到 QQ 失败：', error?.message ?? error));
           }
@@ -9658,6 +9665,32 @@ async function main() {
       if (token && s.includes(token)) s = s.split(token).join('***');
     }
     return s;
+  }
+
+  // 世界（dsh-world）那边的回复是整段文字；QQ/微信的人不会一次说一大段。
+  // 按句子重排成 ≤maxLen 的短消息，最多 maxParts 条（多出来的并到最后一条），由调用方隔着几百毫秒逐条发。
+  function splitHumanBurst(textValue, { maxLen = 80, maxParts = 4 } = {}) {
+    const raw = String(textValue ?? '').replace(/\r\n/g, '\n').trim();
+    if (!raw) return [];
+    const chunks = [];
+    for (const line of raw.split(/\n+/)) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t.length <= maxLen) { chunks.push(t); continue; }
+      const sentences = t.split(/(?<=[。！？!?…；;])/u).filter((s) => s.trim());
+      let buf = '';
+      for (const s of sentences) {
+        if ((buf + s).length <= maxLen) { buf += s; continue; }
+        if (buf) chunks.push(buf.trim());
+        buf = s;
+        while (buf.length > maxLen) { chunks.push(buf.slice(0, maxLen)); buf = buf.slice(maxLen); }
+      }
+      if (buf.trim()) chunks.push(buf.trim());
+    }
+    if (chunks.length <= maxParts) return chunks;
+    const head = chunks.slice(0, maxParts - 1);
+    head.push(chunks.slice(maxParts - 1).join(''));
+    return head;
   }
 
   // 最近一次发送是否全部成功（按 key）。调用方据此决定要不要刷新「我发过言了」的时间戳 ——
