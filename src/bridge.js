@@ -30,6 +30,7 @@ import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-po
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoiceAsr, normalizeAsrConfig } from './voice-asr.mjs';
 import { normalizeExecConfig, policyError, runCommand } from './qq-exec.mjs';
+import { openMemory, appendEvent, searchAll, recentEvents, getCard, getEvent, getDay, dayOf, stats as memoryStats } from './memory-store.mjs';
 import {
   normalizeTaskConfig,
   normalizeTaskState,
@@ -77,7 +78,7 @@ import { ImportError } from './voice-pack-import.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { synthesizeToFile } from './voice-tts.js';
 import { classifyVoiceError, pickFallbackRoute } from './voice-diagnostics.js';
-import { hardenDir, manualDirCommand } from './state-acl.mjs';
+import { hardenDir, hardenDirShallow, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { buildProvenanceBlock, buildSelfIdentityBlock, selfIdentityPath } from './self-identity.js';
 import {
@@ -373,9 +374,23 @@ function loadOrCreateConsoleToken() {
  * 宁可明确报"没做成"，也不要假装已经安全。
  */
 function hardenStateDirAcl() {
-  const result = hardenDir(STATE_DIR);
+  // 快路径：state/ 很大（voice-packs 模型几个 GB），icacls /T 每次都会 30 秒超时、
+  // 启动白等两分钟。已经收紧过就只读一个标记文件，立刻返回。
+  const marker = path.join(STATE_DIR, '.acl-hardened');
+  try {
+    const dirStat = fs.statSync(STATE_DIR);
+    const markStat = fs.statSync(marker);
+    if (markStat.mtimeMs >= dirStat.mtimeMs) {
+      stateDirHardened = true;
+      return;
+    }
+  } catch {
+    /* 没标记就继续 */
+  }
+  const result = hardenDirShallow(STATE_DIR);
   if (result.ok) {
     stateDirHardened = true;
+    try { fs.writeFileSync(marker, String(Date.now())); } catch {}
     return;
   }
   stateDirHardened = false;
@@ -967,6 +982,9 @@ function loadConfig() {
         taskRun: true,
         taskStatus: true,
         taskCancel: true,
+    memorySearch: true,
+    memoryGet: true,
+    memoryDay: true,
         wakePhone: true,
         phoneResult: true,
         setStickerRemark: false,
@@ -1127,6 +1145,9 @@ function loadConfig() {
     taskRun: true,
     taskStatus: true,
     taskCancel: true,
+    memorySearch: true,
+    memoryGet: true,
+    memoryDay: true,
     wakePhone: true,
     phoneResult: true,
     setStickerRemark: false,
@@ -1174,6 +1195,13 @@ function loadConfig() {
   cfg.socialV2.exec = normalizeExecConfig(cfg.socialV2.exec ?? {});
   // socialV2.ownerTasks：后台任务队列（qq_task_run 等），行为参数 + 开关。
   cfg.socialV2.ownerTasks = normalizeTaskConfig(cfg.socialV2.ownerTasks ?? {});
+  cfg.socialV2.memory = {
+    enabled: cfg.socialV2?.memory?.enabled !== false,
+    backend: cfg.socialV2?.memory?.backend === 'elysia' ? 'elysia' : 'card',
+    recentCount: Math.max(0, Math.min(400, Number(cfg.socialV2?.memory?.recentCount ?? 160) || 160)),
+    hitCount: Math.max(0, Math.min(12, Number(cfg.socialV2?.memory?.hitCount ?? 4) || 4)),
+    maxChars: Math.max(0, Math.min(8000, Number(cfg.socialV2?.memory?.maxChars ?? 2200) || 2200)),
+  };
   // socialV2.schedules：日程/定时器（qq_schedule_*），行为参数 + 开关。
   cfg.socialV2.schedules = normalizeScheduleConfig(cfg.socialV2.schedules ?? {});
   // socialV2.phoneWake：手机唤醒通道（反向长轮询），行为参数 + 开关。
@@ -1565,6 +1593,59 @@ const ownerAudit = createOwnerAudit({ dir: STATE_DIR, log: (...args) => log(...a
 const OWNER_TASKS_FILE = path.join(STATE_DIR, 'owner-tasks.json');
 const OWNER_TASKS_OUT_DIR = path.join(STATE_DIR, 'task-outputs');
 let ownerTaskState = normalizeTaskState(readJsonSafe(OWNER_TASKS_FILE, null));
+const MEMORY_DB_FILE = path.join(STATE_DIR, 'memory', 'elysia-memory.sqlite');
+let memoryDb = null;
+let memoryDbFailed = '';
+function memoryHandle() {
+  if (memoryDb) return memoryDb;
+  if (memoryDbFailed) return null;
+  try {
+    memoryDb = openMemory(MEMORY_DB_FILE);
+  } catch (error) {
+    memoryDbFailed = String(error?.message ?? error);
+    log(`[记忆] 打开失败（${MEMORY_DB_FILE}）：${memoryDbFailed}`);
+    return null;
+  }
+  return memoryDb;
+}
+function noteMemoryEvent({ role, text, channel = 'qq', convKey = null, speaker = null, ts = Date.now(), meta = null }) {
+  if (cfg.socialV2?.memory?.enabled === false) return;
+  const body = String(text ?? '').trim();
+  if (!body) return;
+  const db = memoryHandle();
+  if (!db) return;
+  try {
+    appendEvent(db, { ts, channel, convKey, role, speaker, text: body.slice(0, 4000), meta });
+  } catch (error) {
+    log(`[记忆] 写入失败：${error?.message ?? error}`);
+  }
+}
+function memoryRecallBlock(cfgIn) {
+  const m = cfgIn?.socialV2?.memory ?? {};
+  if (m.backend !== 'elysia' || m.maxChars === 0) return '';
+  const db = memoryHandle();
+  if (!db) return '';
+  try {
+    const recent = recentEvents(db, Number(m.recentCount) || 160).reverse();
+    const lines = recent.slice(-40).map((r) => {
+      const who = r.role === 'self' ? '我' : r.role === 'owner' ? '主人' : r.role;
+      return `- ${r.day} ${who}：${String(r.text).replace(/\s+/g, ' ').slice(0, 90)}`;
+    });
+    let hits = [];
+    const lastOwner = [...recent].reverse().find((r) => r.role === 'owner' && String(r.text).length >= 4);
+    if (lastOwner) hits = searchAll(db, String(lastOwner.text).slice(0, 60), Number(m.hitCount) || 4);
+    const hitLines = hits.map((h) => `- ${h.day}（${h.kind}）${String(h.text).replace(/\s+/g, ' ').slice(0, 90)}`);
+    const head = '【记忆·原文】最近发生过的（按时间，越往下越近）：';
+    const tail = hitLines.length ? `${nl}【记忆·相关】和当前这句话有关的旧事：${nl}${hitLines.join(nl)}` : '';
+    let block = `${head}${nl}${lines.join(nl)}${tail}`;
+    const cap = Number(m.maxChars) || 2200;
+    if (block.length > cap) block = block.slice(block.length - cap);
+    return `${block}${nl}${nl}`;
+  } catch (error) {
+    log(`[记忆] 检索失败：${error?.message ?? error}`);
+    return '';
+  }
+}
 function saveOwnerTaskState() {
   try { atomicWriteJson(OWNER_TASKS_FILE, ownerTaskState); } catch (error) { log('[任务] 状态写盘失败:', error?.message ?? error); }
 }
@@ -1655,7 +1736,7 @@ function auditActor(userId, isOwner) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const convKey = (kind, id) => `${kind}:${id}`;
-const SEND_TIMEOUT_MS = 15000;
+const SEND_TIMEOUT_MS = 60000;
 // DSH 控制类调用（停任务/归档会话）的超时。这些 await 以前是裸的：DSH 接受了连接但
 // 不返回响应时，HTTP handler 永不返回，控制台与群消息一起失去响应（issue #32）。
 // 超时后走各自的 catch 记日志，最坏情况只是「这一次重置没做成」，而不是整体挂死。
@@ -7270,6 +7351,7 @@ async function main() {
             });
             const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
             if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
+    for (const text of list) noteMemoryEvent({ role: 'self', text: String(text ?? '').slice(0, 4000), convKey: key });
             st.preSleepWaitSatisfiedAt = 0;
             st.preSleepWaitObservedAt = 0;
             st.preSleepWaitAccumMs = 0;
@@ -7987,6 +8069,71 @@ async function main() {
           return;
         }
 
+        // —— 全量记忆：检索 / 取单条 / 某天 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/memory-search') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('memorySearch')) { sendJson({ ok: false, error: '工具未启用：memory-search' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          const db = memoryHandle();
+          if (!db) { sendJson({ ok: false, error: `记忆库打不开：${memoryDbFailed || MEMORY_DB_FILE}` }, 500); return; }
+          const query = String(body.query ?? '').trim();
+          if (!query) { sendJson({ ok: false, error: 'query 不能为空' }, 400); return; }
+          const limit = Math.max(1, Math.min(20, Number(body.limit) || 8));
+          const hits = searchAll(db, query, limit);
+          sendJson({ ok: true, query, count: hits.length, hits });
+          ownerAudit.append('memory-search', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { bytes: JSON.stringify({ ok: true }).length }, ref: key });
+          return;
+        }
+        // —— 全量记忆：检索 / 取单条 / 某天 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/memory-get') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('memoryGet')) { sendJson({ ok: false, error: '工具未启用：memory-get' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          const db = memoryHandle();
+          if (!db) { sendJson({ ok: false, error: `记忆库打不开：${memoryDbFailed || MEMORY_DB_FILE}` }, 500); return; }
+          const id = String(body.id ?? '').trim();
+          if (!id) { sendJson({ ok: false, error: 'id 不能为空' }, 400); return; }
+          const card = getCard(db, id);
+          if (card) { sendJson({ ok: true, kind: 'card', card }); return; }
+          const numeric = /^\d+$/.test(id) ? Number(id) : NaN;
+          const event = Number.isFinite(numeric) ? getEvent(db, numeric) : null;
+          if (!event) { sendJson({ ok: false, error: `未找到：${id}` }, 404); return; }
+          sendJson({ ok: true, kind: 'event', event });
+          ownerAudit.append('memory-get', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { bytes: JSON.stringify({ ok: true }).length }, ref: key });
+          return;
+        }
+        // —— 全量记忆：检索 / 取单条 / 某天 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/memory-day') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('memoryDay')) { sendJson({ ok: false, error: '工具未启用：memory-day' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          const db = memoryHandle();
+          if (!db) { sendJson({ ok: false, error: `记忆库打不开：${memoryDbFailed || MEMORY_DB_FILE}` }, 500); return; }
+          const day = String(body.day ?? '').trim() || dayOf(Date.now());
+          const row = getDay(db, day);
+          const recent = recentEvents(db, 200).filter((r) => r.day === day).slice(0, 40);
+          sendJson({ ok: true, day, summary: row?.summary ?? '', events: row?.events ?? recent.length, recent });
+          ownerAudit.append('memory-day', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { bytes: JSON.stringify({ ok: true }).length }, ref: key });
+          return;
+        }
         // —— 手机唤醒通道：给她挂一条任务到手机上执行 ——
         if (req.method === 'POST' && url.pathname === '/api/socialV2/wake-phone') {
           const body = await readBody();
@@ -14524,6 +14671,7 @@ async function main() {
       lastTaskReportAt = Date.now();
     }
     // 手机任务：结果回来时注入一次，让她自然醒来先汇报手机那边发生了什么。
+    const recallLine = memoryRecallBlock(cfg);
     const phoneText = phoneResultBlock();
     const phoneLine = phoneText ? `${phoneText}\n\n` : '';
     if (phoneLine) {
@@ -14534,7 +14682,7 @@ async function main() {
     // 压缩规范：billion-context 的 compress 一次至少要压 5000 字符；小范围会报
     // "Total compressible content too small"，那是正常提示、不是故障。不说清楚她会反复重试（L3 止血）。
     const compressLine = '【压缩规范】compress 工具一次要求压缩的内容 ≥5000 字符。如果它报「Total compressible content too small」或「No eligible message ranges」，说明当前没有够大的可压缩范围——这是正常提示，不要重试、不要换更小的范围、也不要当成出错；直接继续当前工作即可。\n\n';
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + taskLine + phoneLine + compressLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + recallLine + taskLine + phoneLine + compressLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -14544,6 +14692,7 @@ async function main() {
       memory: memoryCardLine.length,
       task: taskLine.length,
       phone: phoneLine.length,
+      recall: recallLine.length,
       compress: compressLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
@@ -15409,6 +15558,7 @@ async function main() {
         conversationKey,
         text,
       });
+      noteMemoryEvent({ role: isOwner ? 'owner' : 'guest', text, channel: kind === 'group' ? 'qq-group' : 'qq', convKey: conversationKey, speaker: String(event.sender?.card || event.sender?.nickname || '') });
     } catch {}
   }
 

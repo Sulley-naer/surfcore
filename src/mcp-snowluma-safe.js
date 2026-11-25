@@ -353,6 +353,9 @@ const TOOL_CONFIG_FLAGS = {
   qq_task_cancel: 'taskCancel',
   qq_wake_phone: 'wakePhone',
   qq_phone_result: 'phoneResult',
+  qq_memory_search: 'memorySearch',
+  qq_memory_get: 'memoryGet',
+  qq_memory_day: 'memoryDay',
   qq_schedule_add: 'scheduleAdd',
   qq_schedule_list: 'scheduleList',
   qq_schedule_cancel: 'scheduleCancel',
@@ -1403,6 +1406,54 @@ if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
           headers: { 'x-agent-token': token },
           timeoutMs: 30000
         });
+  if (!ownerToolsInPlugin && cfg.socialV2?.tools?.memorySearch !== false) {
+    server.tool(
+      'qq_memory_search',
+      '检索全量记忆（原文+卡片）。问「以前说过什么/那次怎么回事」时先用它。',
+      {
+        key: z.string().describe('会话键，如 private:123456'),
+        token: z.string().optional().describe('会话令牌（reserved2 必带）'),
+        query: z.string().describe('要查的词或一句话'),
+        limit: z.number().optional().describe('返回条数，默认 8，最多 20'),
+      },
+      async ({ key, token, query, limit }) => {
+        const r = await agentApi('/api/socialV2/memory-search', { key, token, query, limit }, 30000);
+        return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+      },
+    );
+  }
+
+  if (!ownerToolsInPlugin && cfg.socialV2?.tools?.memoryGet !== false) {
+    server.tool(
+      'qq_memory_get',
+      '按 id 取一条记忆全文（id 来自 qq_memory_search 的命中）。',
+      {
+        key: z.string().describe('会话键'),
+        token: z.string().optional(),
+        id: z.string().describe('记忆 id'),
+      },
+      async ({ key, token, id }) => {
+        const r = await agentApi('/api/socialV2/memory-get', { key, token, id }, 30000);
+        return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+      },
+    );
+  }
+
+  if (!ownerToolsInPlugin && cfg.socialV2?.tools?.memoryDay !== false) {
+    server.tool(
+      'qq_memory_day',
+      '看某一天发生了什么（日记摘要 + 当天片段）；不传 day 就是今天。',
+      {
+        key: z.string().describe('会话键'),
+        token: z.string().optional(),
+        day: z.string().optional().describe('YYYY-MM-DD'),
+      },
+      async ({ key, token, day }) => {
+        const r = await agentApi('/api/socialV2/memory-day', { key, token, day }, 30000);
+        return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+      },
+    );
+  }
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `查询手机任务失败：${error?.message ?? error}` }], isError: true };
