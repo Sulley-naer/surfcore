@@ -30,11 +30,13 @@ import { spawnSync } from 'node:child_process';
 
 // Authenticated Users=S-1-5-11, BUILTIN\Users=S-1-5-32-545, Everyone=S-1-1-0
 const PERMISSIVE_SIDS = ['*S-1-5-11', '*S-1-5-32-545', '*S-1-1-0'];
+const LF = String.fromCharCode(10);
 
 /** icacls 的可执行封装（统一超时与隐藏窗口）。 */
 export function icacls(args, timeout = 30000) {
   return spawnSync('icacls', args, { encoding: 'utf8', timeout, windowsHide: true });
 }
+
 
 /**
  * icacls 输出里是否还有**继承来的权限** ACE。
@@ -106,6 +108,37 @@ export function hardenDir(dir) {
  * @param {string} file - 目标文件。
  * @returns {{ok: boolean, detail: string}}
  */
+
+/**
+ * 浅层收紧：只在目录本身断继承 + 授予可继承 ACE，**不递归**。
+ * 子项靠 (OI)(CI) 继承，效果和递归一致，但不会在几万个文件的 state/ 上超时
+ * （voice-packs 模型动辄几个 GB，/T 展开会让 icacls 30 秒超时、每次启动白等两分钟）。
+ */
+export function hardenDirShallow(dir) {
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(dir, 0o700); return { ok: true, detail: 'chmod 700' }; }
+    catch (error) { return { ok: false, detail: error?.message ?? String(error) }; }
+  }
+  const user = process.env.USERNAME;
+  if (!user) return { ok: false, detail: '无法确定当前用户名（%USERNAME% 为空）' };
+  const steps = [
+    [dir, '/inheritance:r', '/C', '/Q'],
+    [dir, '/remove:g', ...PERMISSIVE_SIDS, '/C', '/Q'],
+    [dir, '/Q', '/grant', `${user}:(OI)(CI)F`, '/grant', 'SYSTEM:(OI)(CI)F', '/grant', 'Administrators:(OI)(CI)F']
+  ];
+  for (const args of steps) {
+    const res = icacls(args, 15000);
+    const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+    if (res.error) return { ok: false, detail: res.error.message };
+    if (/access is denied/i.test(out)) {
+      return { ok: false, detail: out.split(LF).filter(Boolean).slice(-3).join(' / ') };
+    }
+  }
+  try { fs.readdirSync(dir); }
+  catch (error) { return { ok: false, detail: `收紧后目录已不可读（${error?.message ?? error}）` }; }
+  return { ok: true, detail: 'icacls(shallow)' };
+}
+
 export function hardenFile(file) {
   if (process.platform !== 'win32') {
     try { fs.chmodSync(file, 0o600); return { ok: true, detail: 'chmod 600' }; }
