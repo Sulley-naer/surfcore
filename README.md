@@ -91,6 +91,26 @@ SurfCore 的 DSH 插件不再只是「设置页 UI + 控制台 API」，还接�
 - 新增文件：`plugins/surfcore/lib/{test-suites.js,test-runner.js,features.js,qq-tools.js}`；单测 `scripts/test-plugin-tools.mjs`（9 个工具定义/门控/schema + 17 项开关往返）。
 - 生效条件：插件由 DSH 进程内加载，**本次改动需重启 DSH 一次**；`toolSource=plugin` 的切换也在这之后做（先确认插件层工具出现，再切）。
 
+### 新增：微信通道（SurfCore 自建，替代 dsh-world 的微信模块）
+
+- 适配器：`D:\surfcore\runtimes\wechat\`（从 dsh-world 的 Windows 适配器复制，含 `.venv` 与编译好的 `engine/a674a602bdee/dsh-wechat.dll`）；`config.json` 的 `moduleFile` 指向 `D:\surfcore\runtimes\wechat\module.json`，后者写 `origin=http://127.0.0.1:3100`、`path=/dsh-world/worlds/default/wechat/ask`、`references=true`。
+- 桥接侧：`src/wechat.mjs`（出站队列/回执/状态，纯逻辑）+ 两个端点 —— `POST /dsh-world/worlds/default/wechat/ask`（适配器轮询：`outbox` 取任务、`receipt` 回执、`text` 来信；用 `x-dsh-world-token` 鉴权，**不吃控制台令牌**）、`POST /api/socialV2/wechat-send`（agent 端入队）。
+- 工具：`qq_wechat_send`（key/token/text/chatId），默认发 `socialV2.wechat.chatId`。来信会写进全量记忆并唤醒她。
+- 守护：计划任务 `SurfCoreWechatWatch`（每 2 分钟；只在 `WeChat.exe` 在跑时拉起 `adapter.py watch --allow-send`）。
+- 配置：`socialV2.wechat = {enabled, chatId, token, autoReply, maxQueue, maxResults}`；令牌缺省时自动生成到 `state/wechat-token`。
+
+### 新增：电脑操作（evolution-computer-use）
+
+- MCP 条目 `mcp-computer-use`（`serverName: evolution-computer-use`，`cmd /c npx -y evolution-computer-use --desktop background --data D:\surfcore\runtimes\ecu`）。
+- `plugins/surfcore/qq-tool-restrict.mjs` 的 `SAFE_PREFIXES` 放行 `mcp__evolution-computer-use__`，QQ 侧的她可直接调 `computer_use / procedure_run / page_* / desktop`。
+- 与 see-now 并存：ECU 前台操作时画面变化大，建议把 see-now 的 `pace` 降档或 `stop`。
+
+### 变更：dsh-world 已移除
+
+- 备份：`D:\surfcore\_backup\world-2026-11-26\`（`~/.dsh/worlds/default` 全量 327 文件 21MB）。
+- 记忆已迁进 `state/memory/elysia-memory.sqlite`（events 114 / cards 1187 / days 3），由 `socialV2.memory.backend='elysia'` 启用。
+- 计划任务 `SurfCoreWorldRoom`、`SurfCoreWorldWallpaper` 已 **Disabled**；WE 工程 `projects\myprojects\xiaoxi-room` 文件保留。
+
 ### 更新到上游新版本（怎么合并官方更新）
 
 **分支模型**（不要把自用改动合进 `main`，否则设置页「一键更新」的 `--ff-only` 会永久失效）：

@@ -1,3 +1,11 @@
+## 微信适配器迁移（2026-11-26）
+
+- 只复制 `src/ecosystem/wechat/windows/*.py` 不够：适配器还要 `engine/profiles.json`（版本/大小/SHA256 白名单）和**编译好的** `engine/<hash>/dsh-wechat.dll` + `engine/current.json`；`current.json` 里的 `file` 要改成新绝对路径，否则报「当前微信版本…必须同时匹配」。
+- `module.json` 必须写 `"references": true`，否则带引用的消息会抛「引用消息需要新版宿主支持」直接把适配器打停。
+- 适配器 POST 的路径 `/dsh-world/worlds/default/wechat/ask` 要绕过控制台令牌校验（它只带 `x-dsh-world-token`）；桥接里已加 `adapterPath` 白名单。
+- 模块级函数（`wechatToken`/`saveWechatState`）不要直接读 `cfg`（那是 `main()` 里的局部变量），改成传参，否则启动即 `ReferenceError: cfg is not defined`。
+- 微信没在跑时适配器会以「不支持当前微信版本」退出——这其实是检测不到进程，不是版本问题；用 `SurfCoreWechatWatch` 守着即可。
+
 # 踩坑档案（PITFALLS）
 
 > 目的：**半天后的我认不出自己做过什么**，所以每个坑都留「现象 / 根因 / 处置 / 怎么验证 / 怎么预防」。
@@ -3228,7 +3236,8 @@ ode scripts/patch-dsh-session-guard.mjs --apply-in-place）。
 2. 「Disable third-party plugins」只摘 bundle、不清 cookie jar，对这类崩溃无效，还会把 surfcore 从 profile 里摘掉
    （需要 
 ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
-3. 复现/取证工具在豆包工作区：epro-host-auth.mjs、measure-cookie.mjs、limit-test.mjs、welcome-debug.log。
+3. 复现/取证工具在豆包工作区：
+epro-host-auth.mjs、measure-cookie.mjs、limit-test.mjs、welcome-debug.log。
 4. 频繁整体重启会加速 token 累积（每次启动一枚）；桥接/插件问题不需要重启整个 DSH。
 
 ## DSH 升级后 QQ 会话没有 qq_* 工具（能收不能发）
