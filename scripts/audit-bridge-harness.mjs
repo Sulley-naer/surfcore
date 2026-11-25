@@ -19,6 +19,7 @@ import * as sticker from '../src/sticker-lib.js';
 import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
+import * as wechatLib from '../src/wechat.mjs';
 import * as voiceDiagnostics from '../src/voice-diagnostics.js';
 import * as voiceAsr from '../src/voice-asr.mjs';
 import * as qqExec from '../src/qq-exec.mjs';
@@ -257,7 +258,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     probeDshBaseUrl: async () => true,
     discoverDshBaseUrl: async () => null,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,
-    ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
+    ...modelPrices, ...tokenLedger, ...voiceLib,
+  ...wechatLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     ...voiceDiagnostics,
     ...voiceAsr,
     ...qqExec,
