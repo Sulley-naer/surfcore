@@ -356,6 +356,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_memory_search: 'memorySearch',
   qq_memory_get: 'memoryGet',
   qq_memory_day: 'memoryDay',
+  qq_wechat_send: 'wechatSend',
   qq_schedule_add: 'scheduleAdd',
   qq_schedule_list: 'scheduleList',
   qq_schedule_cancel: 'scheduleCancel',
@@ -1459,6 +1460,27 @@ if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
         return { content: [{ type: 'text', text: `查询手机任务失败：${error?.message ?? error}` }], isError: true };
       }
     }
+  );
+}
+
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.wechatSend !== false) {
+  server.tool(
+    'qq_wechat_send',
+    '把一句话发到微信（走本机微信适配器，主人微信里能看到）。适合「微信上回他」或者主动发条消息。默认发给 socialV2.wechat.chatId 配置的那个会话；一次最多 900 字，超了会自动拆成几条。仅管理员私聊可用。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      text: z.string().describe('要发的内容'),
+      chatId: z.string().optional().describe('微信会话 id（不填用默认配置）'),
+    },
+    async ({ key, token, text, chatId }) => {
+      try {
+        const r = await agentApi('/api/socialV2/wechat-send', { key, token, text, chatId }, 30000);
+        return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `发送微信消息失败：${error?.message ?? error}` }], isError: true };
+      }
+    },
   );
 }
 

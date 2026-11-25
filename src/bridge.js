@@ -30,6 +30,7 @@ import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-po
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoiceAsr, normalizeAsrConfig } from './voice-asr.mjs';
 import { normalizeExecConfig, policyError, runCommand } from './qq-exec.mjs';
+import { normalizeWechatConfig, normalizeWechatState, enqueueJob as enqueueWechatJob, takeJob as takeWechatJob, applyReceipt as applyWechatReceipt, noteStatus as noteWechatStatus, trimWechatState, summarizeWechat } from './wechat.mjs';
 import { openMemory, appendEvent, searchAll, recentEvents, getCard, getEvent, getDay, dayOf, stats as memoryStats } from './memory-store.mjs';
 import {
   normalizeTaskConfig,
@@ -985,6 +986,7 @@ function loadConfig() {
     memorySearch: true,
     memoryGet: true,
     memoryDay: true,
+    wechatSend: true,
         wakePhone: true,
         phoneResult: true,
         setStickerRemark: false,
@@ -1148,6 +1150,7 @@ function loadConfig() {
     memorySearch: true,
     memoryGet: true,
     memoryDay: true,
+    wechatSend: true,
     wakePhone: true,
     phoneResult: true,
     setStickerRemark: false,
@@ -1206,6 +1209,7 @@ function loadConfig() {
   cfg.socialV2.schedules = normalizeScheduleConfig(cfg.socialV2.schedules ?? {});
   // socialV2.phoneWake：手机唤醒通道（反向长轮询），行为参数 + 开关。
   cfg.socialV2.phoneWake = normalizePhoneWakeConfig(cfg.socialV2.phoneWake ?? {});
+  cfg.socialV2.wechat = normalizeWechatConfig(cfg.socialV2.wechat ?? {});
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
@@ -1659,6 +1663,24 @@ const PHONE_TOKEN_FILE = path.join(STATE_DIR, 'phone-token');
 let phoneWakeState = normalizePhoneWakeState(readJsonSafe(PHONE_WAKE_FILE, null));
 function savePhoneWakeState() {
   try { atomicWriteJson(PHONE_WAKE_FILE, phoneWakeState); } catch (error) { log('[手机通道] 状态写盘失败:', error?.message ?? error); }
+}
+const WECHAT_FILE = path.join(STATE_DIR, 'wechat-state.json');
+const WECHAT_TOKEN_FILE = path.join(STATE_DIR, 'wechat-token');
+let wechatState = normalizeWechatState(readJsonSafe(WECHAT_FILE, null));
+function saveWechatState(wechatCfg) {
+  try { atomicWriteJson(WECHAT_FILE, trimWechatState(wechatState, wechatCfg ?? {})); } catch (error) { log('[微信] 状态写盘失败:', error?.message ?? error); }
+}
+function wechatToken(wechatCfg) {
+  const explicit = String(wechatCfg?.token ?? '').trim();
+  if (explicit) return explicit;
+  try {
+    const saved = fs.readFileSync(WECHAT_TOKEN_FILE, 'utf8').trim();
+    if (saved) return saved;
+  } catch { /* 还没有令牌 */ }
+  const token = crypto.randomBytes(16).toString('hex');
+  try { fs.writeFileSync(WECHAT_TOKEN_FILE, token, { mode: 0o600 }); } catch (error) { log('[微信] 令牌写盘失败:', error?.message ?? error); }
+  log(`[微信] 已生成通道令牌（保存在 state/wechat-token）：${token}`);
+  return token;
 }
 const phoneWakeWaiters = new Set();
 let phoneWakeServer = null;
@@ -4839,7 +4861,9 @@ async function main() {
         if (a.length !== b.length) return false;
         return crypto.timingSafeEqual(a, b);
       })();
-      if (consoleToken && !tokenMatches) {
+      // 微信适配器走自己的令牌（x-dsh-world-token），不吃控制台令牌那一层。
+      const adapterPath = url.pathname === '/dsh-world/worlds/default/wechat/ask';
+      if (consoleToken && !tokenMatches && !adapterPath) {
         if (req.method === 'GET' && url.pathname === '/') {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
@@ -8134,6 +8158,89 @@ async function main() {
           ownerAudit.append('memory-day', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { bytes: JSON.stringify({ ok: true }).length }, ref: key });
           return;
         }
+        // —— 微信出站：把一句话排进微信适配器的发送队列 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/wechat-send') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (!agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (!v2ToolEnabled('wechatSend')) { sendJson({ ok: false, error: '工具未启用：qq_wechat_send' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (cfg.socialV2?.wechat?.enabled === false) { sendJson({ ok: false, error: '微信通道已关闭（socialV2.wechat.enabled=false）' }, 403); return; }
+          const added = enqueueWechatJob(wechatState, {
+            chatId: body.chatId ?? cfg.socialV2?.wechat?.chatId,
+            text: body.text,
+            config: cfg.socialV2?.wechat,
+          });
+          if (!added.ok) {
+            const msg = added.reason === 'queue-full' ? '微信队列已满，稍后再试'
+              : added.reason === 'no-chat' ? '没有可用的微信会话（先配 socialV2.wechat.chatId）'
+              : '文本不能为空';
+            ownerAudit.append('qq_wechat_send', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { rejected: added.reason }, ref: key });
+            sendJson({ ok: false, error: msg }, 400);
+            return;
+          }
+          saveWechatState(cfg.socialV2?.wechat);
+          ownerAudit.append('qq_wechat_send', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { jobId: added.job.id, parts: added.job.messages.length }, ref: key });
+          log(`[微信] 入队出站：${added.job.id} → ${added.job.chatId}（${added.job.messages.length} 条）`);
+          sendJson({ ok: true, job: { id: added.job.id, chatId: added.job.chatId, parts: added.job.messages.length } });
+          return;
+        }
+
+        // —— 微信适配器入站（adapter.py POST 这里：outbox 取任务 / receipt 回执 / text 来信）——
+        if (req.method === 'POST' && url.pathname === '/dsh-world/worlds/default/wechat/ask') {
+          const body = await readBody();
+          if (String(req.headers['x-dsh-world-token'] ?? '') !== wechatToken(cfg.socialV2?.wechat)) {
+            sendJson({ accepted: false, error: 'unauthorized' }, 401);
+            return;
+          }
+          if (cfg.socialV2?.wechat?.enabled === false) {
+            sendJson({ accepted: false, error: '微信通道已关闭' }, 503);
+            return;
+          }
+          if (body.outbox) {
+            const chatIds = Array.isArray(body.outbox.chats) ? body.outbox.chats.map((c) => String(c?.id ?? '')) : [];
+            const job = takeWechatJob(wechatState, { accountId: body.outbox.accountId, chatIds });
+            if (job) {
+              saveWechatState(cfg.socialV2?.wechat);
+              log(`[微信] 出站投递：${job.id} → ${job.chatId}`);
+            }
+            sendJson({ accepted: true, job: job ? { id: job.id, accountId: body.outbox.accountId, chatId: job.chatId, messages: job.messages } : null });
+            return;
+          }
+          if (body.receipt) {
+            const applied = applyWechatReceipt(wechatState, body.receipt);
+            saveWechatState(cfg.socialV2?.wechat);
+            if (applied.ok) log(`[微信] 回执：${applied.job.id} ${applied.job.status} ${applied.job.confirmed}/${applied.job.total}`);
+            sendJson({ accepted: applied.ok, receipt: applied.ok ? { id: applied.job.id, status: applied.job.status } : null });
+            return;
+          }
+          if (body.status) {
+            noteWechatStatus(wechatState, body.status.wechat ?? body.status);
+            saveWechatState(cfg.socialV2?.wechat);
+            sendJson({ accepted: true });
+            return;
+          }
+          const textValue = String(
+            body.text ?? (Array.isArray(body.messages) ? body.messages.map((m) => String(m?.text ?? '')).join('\n') : ''),
+          ).trim();
+          if (!textValue) { sendJson({ accepted: true, id: null, text: '' }); return; }
+          const ident = body.identity && typeof body.identity === 'object' ? body.identity : {};
+          const speaker = String(ident.speakerName ?? '主人');
+          const convId = String(ident.conversationId ?? '');
+          wechatState.inbound = (Number(wechatState.inbound) || 0) + 1;
+          saveWechatState(cfg.socialV2?.wechat);
+          noteMemoryEvent({ role: 'owner', text: textValue, channel: 'wechat', convKey: `wechat:${convId}`, speaker, ts: Date.now() });
+          log(`[微信] 来信（${speaker}）：${textValue.slice(0, 40)}`);
+          if (cfg.socialV2?.wechat?.autoReply !== false) {
+            void deliverPrompt(`private:${String(cfg.ownerQQ ?? '')}`, `【微信】${speaker}：${textValue}`);
+          }
+          sendJson({ accepted: true, id: `wxin-${Date.now().toString(36)}`, text: '' });
+          return;
+        }
+
         // —— 手机唤醒通道：给她挂一条任务到手机上执行 ——
         if (req.method === 'POST' && url.pathname === '/api/socialV2/wake-phone') {
           const body = await readBody();
