@@ -1632,6 +1632,7 @@ function noteMemoryEvent({ role, text, channel = 'qq', convKey = null, speaker =
   }
 }
 function memoryRecallBlock(cfgIn) {
+  const nl = String.fromCharCode(10);
   const m = cfgIn?.socialV2?.memory ?? {};
   if (m.backend !== 'elysia' || m.maxChars === 0) return '';
   const db = memoryHandle();
