@@ -18,6 +18,11 @@
 | 微信通道 | 本机适配器 + 出站队列；当前微信 4.2.1.8 不在受支持 profile 里，先挂着 | 见下 |
 | DSH 插件层 | 设置页「自检」面板、桥接状态卡片、17 项功能开关、`qq_*` 工具可热重挂 | 见下 |
 
+> **文档归属（2026-11-28 定）**：`README.md`、`docs/**`、`MIGRATION.md` 只在 `feat/portable` 上改，`feat/voice-asr` 只管代码。
+> 合并/cherry-pick 撞到这些文件的冲突时，一律取 `feat/portable` 版本：
+> `git show feat/portable:README.md > README.md && git add README.md`（`docs/`、`MIGRATION.md` 同理）。
+> 这样文档只在一个分支上生长，不用每次两边手工对齐。
+
 ### 新增：收到 QQ 语音自动转写
 
 - `src/voice-asr.mjs`（新增）：转写控制器 —— 先问 QQ `fetch_ptt_text`，失败走本地 faster-whisper；按 messageId 缓存、限并发、超时降级；管理常驻 STT 服务（自启动 / 复用 / 退出回收）。

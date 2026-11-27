@@ -22,6 +22,9 @@
 
 ## guides/ —— 面向使用者 / 运维
 
+> 维护约定：`README.md`、`docs/**`、`MIGRATION.md` 只在 `feat/portable` 分支更新；`feat/voice-asr` 只提交代码。合并撞到文档冲突时取 `feat/portable` 版。
+
+
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
 | ~~guides/PROJECT_GUIDE.md~~ | **（已不在工作区）** 旧的「权威项目说明书」（113 KB / 1450+ 行）。2026-10-26 逐行梳理后由 `ARCHITECTURE.md` + `MODULE-*.md` + `SUBSYSTEM-*.md` 这套**带 `文件:行号`** 的新文档取代 | 🗄️ 已被取代；本机文件已不存在（`.gitignore` 排除的那批历史文档之一），链接点不开属预期 |
