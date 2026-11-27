@@ -28,6 +28,9 @@
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | DSH 端安装说明：`qq-chat` / `qq-chat-v2` preset 与三个 MCP server 怎么挂到目标设备的 DSH 上 | ✅ |
 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) | 控制台「令牌与花费」看板：数据来源、计价口径（峰谷分时）、API、配置 | ✅ |
 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 控制台离线预览（`npm run preview:console`）与离线浏览器回归（`npm run test:console-ui`）怎么用 | ✅ 2026 整理时自 `scripts/` 移入 |
+| [guides/AGENT_PERMISSIONS.md](guides/AGENT_PERMISSIONS.md) | **她能调用的工具与权限边界**：三层开关（注册期隐藏 / 执行期白名单 / 功能开关）、逐项工具表与关法、保持隐藏的口子 | ✅ 2026-11-28 新增 |
+| [guides/MEMORY_ELYSIA.md](guides/MEMORY_ELYSIA.md) | **全量记忆（elysia）**：`node:sqlite` + FTS5 原文库、events/cards 表、迁移脚本、唤醒注入、`qq_memory_*` 端点与工具 | ✅ 2026-11-28 新增 |
+| [guides/COMPUTER_USE_ECU.md](guides/COMPUTER_USE_ECU.md) | **电脑操作（ECU 本地 fork）**：MCP 启动方式、拟人鼠标路径参数、procedure 沉淀规矩、与 see-now 的配合 | ✅ 2026-11-28 新增 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | **安全基线与威胁模型**：威胁主体、已实现的边界（准入/工具面/出站/控制台/落盘/网络）、已知残余风险、发布前回归清单、改动检查单 | ✅ **改动安全相关代码前必读**（2026-09-20 新增） |
 | [guides/MEMORY_CARD.md](guides/MEMORY_CARD.md) | **记忆卡设计与使用**：衰减卡 vs 全量卡、重要度评分、「最初」30 天概率与初次相遇指定、清晰度/遗忘、80/90/100% 容量告警、压缩、全量存档/召回、隐私 scope、配置/API/验证 | ✅ 2026-10-22 新增 |
 | [guides/CHARACTER_PERSONA.md](guides/CHARACTER_PERSONA.md) | **角色人格系统**：每角色目录包（人格卡 + 记忆卡 + B站行为账本）、切换序列与隔离矩阵、12 槽自动存档/回档、旧数据迁移、API、已知边界 | ✅ 2026-10-23 新增 |
