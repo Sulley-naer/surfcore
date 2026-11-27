@@ -103,7 +103,7 @@ const LOCAL_EXECUTION_TOOLS = [
   // 自带运行时（Python/Node/pnpm 的绝对路径）⇒ 等于把"跑代码"递给模型
   'load_workspace_dependencies',
   // 派生 agent 与编排（都能间接拿到 shell）
-  'subagent', 'subagent_fork', 'list_subagent_models',
+  'list_subagent_models',
   'send_message', 'interrupt_agent', 'list_agents',
   'workflow', 'ralph',
   // 插件/cordis 运行期检查：能读宿主状态（0.1.7 起只有这两个名字）
@@ -192,6 +192,11 @@ const SAFE_EXACT = new Set([
   'purge_apply',
   'purge_status',
   'purge_revert',
+  // 派生 agent（2026-11-28 主人要求）：让她能把一段独立的活派给子 agent 去做，
+  // 不占用自己的对话回合。子 agent 继承宿主工具集，等价于把执行面延伸出去，
+  // 因此只对 owner 私聊生效（执行期仍走 owner-only 的会话校验）。
+  'subagent',
+  'subagent_fork',
 ])
 
 // 给「插件兼容性体检」读取的只读快照：不要在别处再抄一份白名单。
