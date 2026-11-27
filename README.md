@@ -2,10 +2,21 @@
 
 ## 对 SurfCore 的改动（自用）
 
-> 本仓库是自用 fork（`Sulley-naer/surfcore`，上游 `origin = Mieksido/surfcore`）。
-> 改动都在 `feat/voice-asr` 分支。
-> 上游基线：已合并到 **v0.8.6**（2026-11-01）。`main` 保持干净（设置页「一键更新」仍可用），
-> 以后合并上游用 `git fetch origin && git merge origin/main`，不要把自用改动合进 `main`。
+分支模型：`main` = 纯上游（保持干净，随时能开一键更新）／`feat/voice-asr` = 自用功能／`feat/portable` = 集成 + 迁移工具。
+**这些改动暂不合并进 `main`**（合进去后设置页一键更新会因 `--ff-only` 永久失效），更新走上文的手动 merge 流程。
+
+| 改动 | 一句话 | 细节 |
+| --- | --- | --- |
+| 全量记忆 elysia | `node:sqlite` + FTS5 的原文库，`qq_memory_search/get/day`；唤醒时注入「原文 + 相关」两段 | [MEMORY_ELYSIA.md](docs/guides/MEMORY_ELYSIA.md) |
+| 她要用的工具与权限 | 三层开关（注册期隐藏 / 执行期白名单 / 功能开关）+ 逐项清单与关法 | [AGENT_PERMISSIONS.md](docs/guides/AGENT_PERMISSIONS.md) |
+| 电脑操作 ECU | 本地 fork，拟人鼠标路径（贝塞尔 30~60 点/300~900ms/±3px）、procedure 沉淀 | [COMPUTER_USE_ECU.md](docs/guides/COMPUTER_USE_ECU.md) |
+| 跨设备迁移 | `scripts/portable/{export-port,bootstrap-windows,port-doctor}` + `runtime-paths.js` | [../MIGRATION.md](../MIGRATION.md) |
+| 语音转写 / 发图 / 发语音 | QQ 语音→本地 faster-whisper→文字；`qq_send_image` 把图真发到 QQ | 见下 |
+| 命令 / 任务 / 日程 | `qq_run_code`（黑名单模式）、`qq_task_*`（并发 2、排队 10）、`qq_schedule_*` | 见下 |
+| 看屏幕 / 说话 / 听话 | dsh-see-now：`see_now` + `~/.dsh/voice.json` 适配器（她的音色）+ 本机 STT | [SEE_NOW_VISION.md](docs/guides/SEE_NOW_VISION.md) |
+| 手机唤醒通道 | 反向长轮询，公网 `https://wake.xinzhi.stream`，`qq_wake_phone` / `qq_phone_result` | [PHONE_WAKE_CHANNEL.md](docs/guides/PHONE_WAKE_CHANNEL.md) |
+| 微信通道 | 本机适配器 + 出站队列；当前微信 4.2.1.8 不在受支持 profile 里，先挂着 | 见下 |
+| DSH 插件层 | 设置页「自检」面板、桥接状态卡片、17 项功能开关、`qq_*` 工具可热重挂 | 见下 |
 
 ### 新增：收到 QQ 语音自动转写
 
@@ -91,16 +102,6 @@ SurfCore 的 DSH 插件不再只是「设置页 UI + 控制台 API」，还接�
 - 新增文件：`plugins/surfcore/lib/{test-suites.js,test-runner.js,features.js,qq-tools.js}`；单测 `scripts/test-plugin-tools.mjs`（9 个工具定义/门控/schema + 17 项开关往返）。
 - 生效条件：插件由 DSH 进程内加载，**本次改动需重启 DSH 一次**；`toolSource=plugin` 的切换也在这之后做（先确认插件层工具出现，再切）。
 
-### 新增：全量记忆（`qq_memory_search` / `qq_memory_get` / `qq_memory_day`）
-
-- 后端：`src/memory-store.mjs`（Node 自带 `node:sqlite` + FTS5 trigram），库文件 `state/memory/elysia-memory.sqlite`。
-  表：`events`（每条聊天原文，含 role/speaker/ts/day/channel）、`events_fts`、`cards`（记忆卡/日记/认识页，带 importance/emotional/clarity）、`days`、`meta`。
-- 迁移：`node scripts/migrate-memory.mjs`（支持 `--dry-run`）。当前库：events 114 / cards 1187 / days 3。
-- 接线：`socialV2.memory = {enabled, backend:'card'|'elysia', recentCount, hitCount, maxChars}`。
-  backend 为 `elysia` 时，唤醒 prompt 在记忆卡之后注入「【记忆·原文】最近 N 条」+「【记忆·相关】FTS 命中」两段；来信/发出消息都会写 `events`。
-- 工具（owner 私聊）：`qq_memory_search`（query/limit）、`qq_memory_get`（id，卡片或原文）、`qq_memory_day`（day，默认今天：日摘要 + 事件 + 最近）。
-- 端点：`POST /api/socialV2/memory-search` / `memory-get` / `memory-day`，都走 owner-only + agent token + `socialV2.tools.memorySearch|memoryGet|memoryDay`。
-
 ### 新增：微信通道（SurfCore 自建，替代 dsh-world 的微信模块）
 
 - 适配器：`D:\surfcore\runtimes\wechat\`（从 dsh-world 的 Windows 适配器复制，含 `.venv` 与编译好的 `engine/a674a602bdee/dsh-wechat.dll`）；`config.json` 的 `moduleFile` 指向 `D:\surfcore\runtimes\wechat\module.json`，后者写 `origin=http://127.0.0.1:3100`、`path=/dsh-world/worlds/default/wechat/ask`、`references=true`。
@@ -109,57 +110,14 @@ SurfCore 的 DSH 插件不再只是「设置页 UI + 控制台 API」，还接�
 - 守护：计划任务 `SurfCoreWechatWatch`（每 2 分钟；只在 `WeChat.exe` / `Weixin.exe` 在跑时拉起 `adapter.py watch --allow-send`）。（当前任务已 Disabled——微信 4.2.1.8 不在 `engine/profiles.json` 的 7 条受支持版本里，出站会一直 pending；降级到 4.2.0.53 或 4.1.15.56 后再启用。）
 - 配置：`socialV2.wechat = {enabled, chatId, token, autoReply, maxQueue, maxResults}`；令牌缺省时自动生成到 `state/wechat-token`。
 
-### 新增：电脑操作（evolution-computer-use）
-
-- 本地 fork：`D:\surfcore\runtimes\ecu-src`（从 `npx` 缓存复制，0.1.0，MIT），MCP 条目 `mcp-computer-use` 用
-  `cmd.exe /c node D:\surfcore\runtimes\ecu-src\lib\cli.js --desktop background --data D:\surfcore\runtimes\ecu` 启动。
-- `plugins/surfcore/qq-tool-restrict.mjs` 的 `SAFE_PREFIXES` 放行 `mcp__evolution-computer-use__`：QQ 侧的她可直接调
-  `computer_use / procedure_run / procedure_save / procedure_note / routines / page_* / desktop / inbox_read`。
-- **像人手一样点**（fork 新增，`src/shared/human.js`）：点击前用随机三次贝塞尔走过去，30~60 个采样点、300~900ms、
-  落点 ±3px 抖动、连点之间随机停 80~250ms。参数在 `D:\surfcore\runtimes\ecu\input.json`（或 `ECU_INPUT_JSON` 指向的文件）：
-
-  ```json
-  { "samplesMin": 30, "samplesMax": 60, "durationMinMs": 300, "durationMaxMs": 900,
-    "jitterPx": 3, "clickGapMinMs": 80, "clickGapMaxMs": 250 }
-  ```
-- **学会的操作要沉淀**（preset 第 16.5 条）：动手前先 `computer_use(target="对象名")` 查有没有学过；走通一次就
-  `procedure_save` + `procedure_note`（写网址/程序、登录状态、关键按钮原文、常见坑），回放失败就地修并覆盖同名操作。
-- 与 see-now 共存：ECU 前台操作时画面变化大，把 see-now 的 `pace` 降档或 `stop`。
-
-### 权限：她能调用的工具（owner-only）
-
-只有 `private:<ownerQQ>` 这条会话能调，群里和别人的私聊都拒。三层开关，从粗到细：
-
-| 层 | 在哪 | 作用 |
-| --- | --- | --- |
-| 注册期隐藏 | `plugins/surfcore/qq-tool-restrict.mjs` 的 `KNOWN_DANGEROUS_GLOBAL_TOOLS` | 从工具表里彻底不出现（`read/write/bash/spawn_teammate/workflow` 等） |
-| 执行期白名单 | 同文件 `SAFE_EXACT` + `SAFE_PREFIXES` | 放行单个工具名（`see_now` / `sticker_*` / `subagent` …）或整个命名空间（`mcp__snowluma__` / `mcp__evolution-computer-use__` / `mcp__web-search-safe__`） |
-| 功能开关 | `config.json` 的 `socialV2.tools.*` 与设置页「功能开关」 | 13+17 项，关掉即隐藏对应工具，无需改代码 |
-
-现在她能用的执行类工具：
-
-| 工具 | 能做什么 | 关掉的办法 |
-| --- | --- | --- |
-| `qq_run_code` | 在本机跑命令（黑名单模式：只拦 `del /s`、`format`、`shutdown`、`taskkill` 这类破坏性指令；cwd=用户主目录） | `socialV2.exec.enabled=false` 或 `tools.runCode=false` |
-| `qq_task_run` / `qq_task_status` / `qq_task_cancel` | 挂后台长任务（并发 2、排队 10），完成后走 purpose 链路汇报 | `tools.taskRun/taskStatus/taskCancel` |
-| `qq_schedule_add` / `qq_schedule_list` / `qq_schedule_cancel` | 排日程，到点唤醒她自己执行 | `socialV2.schedules.enabled` |
-| `qq_wake_phone` / `qq_phone_result` | 反向长轮询派活给手机 agent（公网 `https://wake.xinzhi.stream`，UA 要 `dshgo/1.0`） | `socialV2.phoneWake.enabled` |
-| `qq_memory_search` / `qq_memory_get` / `qq_memory_day` | 查全量记忆（原文 + 卡片 + 日记） | `socialV2.memory.enabled` |
-| `qq_wechat_send` | 发微信（走本机适配器；当前微信版本不支持，先挂着） | `socialV2.wechat.enabled` |
-| `qq_send_image` / `qq_send_sticker` / `sticker_*` | 发图/表情包 | `tools.sendImage/sendSticker` |
-| `mcp__evolution-computer-use__*` | 操作她自己的浏览器 + 用户电脑（后台投递），带拟人鼠标路径与 procedure 沉淀 | 从 `SAFE_PREFIXES` 摘掉该前缀 |
-| `subagent` / `subagent_fork` | 把独立耗时的活派给子 agent，结论回来自己核 | 从 `SAFE_EXACT` 摘掉，或加回 `KNOWN_DANGEROUS_GLOBAL_TOOLS` |
-| `see_now` | 看屏幕 / 悬浮窗说话（只读像素） | 从 `SAFE_EXACT` 摘掉 |
-| `compress` / `decompress` / `search_context` | 上下文压缩（不放行时模型会反复重试被拒工具） | 同上 |
-
-没开的口子（保持隐藏）：`read/write/edit/glob/grep`、`bash/pwsh`、`spawn_teammate`、`team_task_*`、`workflow/ralph`、
-`plugin_manager`、`schedule_*`（DSH 自带那套，避免与 SurfCore 日程抢）、`send_message/interrupt_agent/list_agents`。
-
 ### 变更：dsh-world 已移除
 
 - 备份：`D:\surfcore\_backup\world-2026-11-26\`（`~/.dsh/worlds/default` 全量 327 文件 21MB）。
 - 记忆已迁进 `state/memory/elysia-memory.sqlite`（events 114 / cards 1187 / days 3），由 `socialV2.memory.backend='elysia'` 启用。
 - 计划任务 `SurfCoreWorldRoom`、`SurfCoreWorldWallpaper` 已 **Disabled**；WE 工程 `projects\myprojects\xiaoxi-room` 文件保留。
+
+
+---
 
 ### 更新到上游新版本（怎么合并官方更新）
 
