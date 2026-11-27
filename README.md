@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | 全量记忆 elysia | `node:sqlite` + FTS5 的原文库，`qq_memory_search/get/day`；唤醒时注入「原文 + 相关」两段 | [MEMORY_ELYSIA.md](docs/guides/MEMORY_ELYSIA.md) |
 | 她要用的工具与权限 | 三层开关（注册期隐藏 / 执行期白名单 / 功能开关）+ 逐项清单与关法 | [AGENT_PERMISSIONS.md](docs/guides/AGENT_PERMISSIONS.md) |
+| 她怎么知道能干啥 | `src/capabilities.mjs` 一份数据 → 唤醒 prompt 注入「能力地图」+ `qq_help(topic=…)` 查细节 | [AGENT_PERMISSIONS.md](docs/guides/AGENT_PERMISSIONS.md) |
 | 电脑操作 ECU | 本地 fork，拟人鼠标路径（贝塞尔 30~60 点/300~900ms/±3px）、procedure 沉淀 | [COMPUTER_USE_ECU.md](docs/guides/COMPUTER_USE_ECU.md) |
 | 跨设备迁移 | `scripts/portable/{export-port,bootstrap-windows,port-doctor}` + `runtime-paths.js` | [../MIGRATION.md](../MIGRATION.md) |
 | 语音转写 / 发图 / 发语音 | QQ 语音→本地 faster-whisper→文字；`qq_send_image` 把图真发到 QQ | 见下 |

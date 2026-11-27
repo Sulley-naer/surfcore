@@ -29,3 +29,15 @@
 
 没开的口子（保持隐藏）：`read/write/edit/glob/grep`、`bash/pwsh`、`spawn_teammate`、`team_task_*`、`workflow/ralph`、
 `plugin_manager`、`schedule_*`（DSH 自带那套，避免与 SurfCore 日程抢）、`send_message/interrupt_agent/list_agents`。
+
+## 她怎么知道自己能做什么
+
+不靠记忆、不靠人提，两层：
+
+1. **唤醒时自动注入「能力地图」**：`src/capabilities.mjs` 的 `renderPresetBlock()` 会被 `buildWakePromptV2` 拼进系统提示
+   （`lastWakePromptMeta.capabilities` 记录长度）。每轮都有，13 行，只写「有什么 + 干什么用」。
+2. **要看细节时查 `qq_help`**：不带参数给总览（id/标题/工具/场景），带 `topic` 给单条的**边界和例子**，
+   端点 `POST /api/socialV2/help`。拿不准就先查，别硬试被拒的工具。
+
+单一数据源：改能力只改 `src/capabilities.mjs`，预设/工具/文档都不手抄第二份；`scripts/test-capabilities.mjs` 守着
+「每条都有 title/when/limits/example」「总览覆盖所有 id」「未知主题要明说」。
