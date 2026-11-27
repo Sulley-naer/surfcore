@@ -356,6 +356,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_memory_search: 'memorySearch',
   qq_memory_get: 'memoryGet',
   qq_memory_day: 'memoryDay',
+  qq_help: 'help',
   qq_wechat_send: 'wechatSend',
   qq_schedule_add: 'scheduleAdd',
   qq_schedule_list: 'scheduleList',
@@ -1464,7 +1465,21 @@ if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
 }
 
 if (!ownerToolsInPlugin && cfg.socialV2?.tools?.wechatSend !== false) {
-  server.tool(
+    if (cfg.socialV2?.tools?.help !== false) {
+    server.tool(
+      'qq_help',
+      '查「我能做什么」：不带 topic 返回能力总览，带 topic（run_code/tasks/schedule/phone/memory/computer/see/images/subagent/wechat/context）返回边界与例子。拿不准有没有这个能力时先查这里。',
+      {
+        key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+        token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+        topic: z.string().optional().describe('主题 id，可省略'),
+      },
+      async ({ key, token, topic }) =>
+        agentApi('/api/socialV2/help', { key, token, ...(topic ? { topic } : {}) }),
+    );
+  }
+
+server.tool(
     'qq_wechat_send',
     '把一句话发到微信（走本机微信适配器，主人微信里能看到）。适合「微信上回他」或者主动发条消息。默认发给 socialV2.wechat.chatId 配置的那个会话；一次最多 900 字，超了会自动拆成几条。仅管理员私聊可用。',
     {

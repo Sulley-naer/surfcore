@@ -29,6 +29,8 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoiceAsr, normalizeAsrConfig } from './voice-asr.mjs';
+import { renderHelp, renderPresetBlock } from './capabilities.mjs';
+import { applyRuntimePaths } from './runtime-paths.js';
 import { normalizeExecConfig, policyError, runCommand } from './qq-exec.mjs';
 import { normalizeWechatConfig, normalizeWechatState, enqueueJob as enqueueWechatJob, takeJob as takeWechatJob, applyReceipt as applyWechatReceipt, noteStatus as noteWechatStatus, trimWechatState, summarizeWechat } from './wechat.mjs';
 import { openMemory, appendEvent, searchAll, recentEvents, getCard, getEvent, getDay, dayOf, stats as memoryStats } from './memory-store.mjs';
@@ -986,6 +988,7 @@ function loadConfig() {
     memorySearch: true,
     memoryGet: true,
     memoryDay: true,
+    help: true,
     wechatSend: true,
         wakePhone: true,
         phoneResult: true,
@@ -1150,6 +1153,7 @@ function loadConfig() {
     memorySearch: true,
     memoryGet: true,
     memoryDay: true,
+    help: true,
     wechatSend: true,
     wakePhone: true,
     phoneResult: true,
@@ -1368,6 +1372,9 @@ function loadConfig() {
   // 没有这个环境变量，就回退 config.json。
   const dshWebUrl = String(process.env.DSH_WEB_URL ?? '').trim();
   if (dshWebUrl) cfg.dsh.baseUrl = dshWebUrl;
+
+  // 跨设备迁移：paths.json / 环境变量里的运行时路径在这里覆盖 config.json（见 runtime-paths.js）。
+  applyRuntimePaths(cfg, ROOT);
 
   return cfg;
 }
@@ -8138,7 +8145,22 @@ async function main() {
           ownerAudit.append('memory-get', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { bytes: JSON.stringify({ ok: true }).length }, ref: key });
           return;
         }
-        // —— 全量记忆：检索 / 取单条 / 某天 ——
+        // —— 能力地图：她能做什么 ——
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/help') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (key !== `private:${String(cfg.ownerQQ ?? '')}`) { sendJson({ ok: false, error: '该工具仅管理员私聊可用' }, 403); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('help')) { sendJson({ ok: false, error: '工具未启用：help' }, 403); return; }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式执行必须携带 agent token' }, 403); return; }
+          sendJson({ ok: true, text: renderHelp(body.topic) });
+          ownerAudit.append('help', { actor: { id: String(cfg.ownerQQ ?? ''), isOwner: true }, auth: 'reserved2-owner', result: { bytes: JSON.stringify({ ok: true }).length }, ref: key });
+          return;
+        }
+
         if (req.method === 'POST' && url.pathname === '/api/socialV2/memory-day') {
           const body = await readBody();
           const key = String(body.key ?? '').trim();
@@ -14779,6 +14801,8 @@ async function main() {
     }
     // 手机任务：结果回来时注入一次，让她自然醒来先汇报手机那边发生了什么。
     const recallLine = memoryRecallBlock(cfg);
+    const capabilityMap = renderPresetBlock();
+    const capabilityLine = capabilityMap ? capabilityMap + '\n\n' : '';
     const phoneText = phoneResultBlock();
     const phoneLine = phoneText ? `${phoneText}\n\n` : '';
     if (phoneLine) {
@@ -14789,7 +14813,7 @@ async function main() {
     // 压缩规范：billion-context 的 compress 一次至少要压 5000 字符；小范围会报
     // "Total compressible content too small"，那是正常提示、不是故障。不说清楚她会反复重试（L3 止血）。
     const compressLine = '【压缩规范】compress 工具一次要求压缩的内容 ≥5000 字符。如果它报「Total compressible content too small」或「No eligible message ranges」，说明当前没有够大的可压缩范围——这是正常提示，不要重试、不要换更小的范围、也不要当成出错；直接继续当前工作即可。\n\n';
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + recallLine + taskLine + phoneLine + compressLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + recallLine + capabilityLine + taskLine + phoneLine + compressLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -14800,6 +14824,7 @@ async function main() {
       task: taskLine.length,
       phone: phoneLine.length,
       recall: recallLine.length,
+      capabilities: capabilityLine.length,
       compress: compressLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
