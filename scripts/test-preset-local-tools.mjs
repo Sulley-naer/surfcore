@@ -64,7 +64,7 @@ const LOCAL_EXECUTION_TOOLS = [
   'read', 'read_image', 'write', 'edit', 'str_replace_editor',
   'glob', 'grep',
   'load_workspace_dependencies',
-  'subagent', 'subagent_fork', 'list_subagent_models',
+  'list_subagent_models',
   'send_message', 'interrupt_agent', 'list_agents',
   'workflow', 'ralph',
   'cordis_inspect_list', 'cordis_inspect_query',
