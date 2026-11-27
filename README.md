@@ -17,6 +17,7 @@
 | 手机唤醒通道 | 反向长轮询，公网 `https://wake.xinzhi.stream`，`qq_wake_phone` / `qq_phone_result` | [PHONE_WAKE_CHANNEL.md](docs/guides/PHONE_WAKE_CHANNEL.md) |
 | 微信通道 | 本机适配器 + 出站队列；当前微信 4.2.1.8 不在受支持 profile 里，先挂着 | 见下 |
 | DSH 插件层 | 设置页「自检」面板、桥接状态卡片、17 项功能开关、`qq_*` 工具可热重挂 | 见下 |
+| DSH 自重启与自检 | `dsh-restart.ps1`（`-Ensure`/`-Restart`/`-Status`）、计划任务 `SurfCoreDsh`（登录后 20s）+ `SurfCoreDshWatch`（每 2 分钟守护）、DSH 定时自检（每 3 小时） | 见下 |
 
 > **文档归属（2026-11-28 定）**：`README.md`、`docs/**`、`MIGRATION.md` 只在 `feat/portable` 上改，`feat/voice-asr` 只管代码。
 > 合并/cherry-pick 撞到这些文件的冲突时，一律取 `feat/portable` 版本：
@@ -123,6 +124,18 @@ SurfCore 的 DSH 插件不再只是「设置页 UI + 控制台 API」，还接�
 
 
 ---
+
+### 新增：DSH 自重启 + 自检唤醒
+
+- 脚本 `D:\surfcore\runtimes\dsh-restart.ps1`（UTF-8 BOM，日志 `dsh-restart.log`）：
+  - `-Status`：打印 `dsh: running pid=…` / `dsh: stopped`
+  - `-Ensure`：没跑就拉起（守护用，已在跑直接退出）
+  - `-Restart`：先 `CloseMainWindow` 优雅关，超时 `-TimeoutSec`（默认 25s）再 `Stop-Process -Force`，然后拉起
+- 计划任务：
+  - `SurfCoreDsh`：登录后 20 秒 `-Ensure`（StartWhenAvailable）
+  - `SurfCoreDshWatch`：每 2 分钟 `-Ensure`（任务本身 Hidden，`-WindowStyle Hidden`，不会闪黑窗）
+- 自检唤醒：DSH 内置 schedule `SurfCore 自检（DSH+桥接）`，每 3 小时一次，跑 `-Status` + 桥接 `/api/status` + 看 `state/bridge.log` 尾部；全绿只回一句「自检正常」。
+- 手动重启用 `-Restart`；改频率改任务触发器，或在 DSH 里改这条 schedule。
 
 ### 更新到上游新版本（怎么合并官方更新）
 
