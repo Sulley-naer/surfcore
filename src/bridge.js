@@ -2179,7 +2179,21 @@ async function main() {
     }
     try {
       const count = Math.min(500, Math.max(1, Number(cfg.socialV2?.sticker?.maxListCount) || 100));
-      const response = await bot.request('fetch_custom_face_detail', { count });
+      // WS 可能在重连窗口里（SnowLuma 重启/换 token），一次失败就重试一次，别把整轮同步判死
+      let response = null;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          response = await bot.request('fetch_custom_face_detail', { count });
+          break;
+        } catch (wsError) {
+          const msg = String(wsError?.message ?? wsError);
+          if (attempt === 1 && /closed before opening|not open|ECONN/i.test(msg)) {
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            continue;
+          }
+          throw wsError;
+        }
+      }
       if (!response || response.status !== 'ok' || response.retcode !== 0) {
         throw new Error(`fetch_custom_face_detail 失败: ${response?.wording || response?.retcode || 'unknown'}`);
       }
