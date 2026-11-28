@@ -26,7 +26,7 @@ const SHELL_META_RE = /[;|&<>`$%^()\t\n\r\f\v\u0000]/;
 //   ^ 转义（cmd，可绕过关键字匹配）
 //   以及换行/回车/制表等控制符（防用控制符拼第二条命令）。
 // 注：不拦 ( )——分组/子 shell 内的命令同样会被下方的破坏性黑名单整串扫描命中。
-const BLACKLIST_META_RE = /[`$%^\t\n\r\f\v\u0000]/;
+const BLACKLIST_META_RE = /[`%^\t\n\r\f\v\u0000]/;
 
 // —— 白名单模式：首词 -> 策略（args 是「首词之后整段参数」的正则，deny 是危险词黑名单）。
 const EXEC_POLICY = {
@@ -105,7 +105,7 @@ export function policyError(command, { mode = 'blacklist' } = {}) {
 
   if (mode === 'whitelist') {
     if (SHELL_META_RE.test(raw)) {
-      return '命令含被禁止的 shell 元字符（; | & < > ` $ % ^ ( ) 或控制符），只允许单个简单命令';
+    return '命令含被禁止的 shell 元字符（` % ^ 或控制符），不允许命令替换/变量展开/转义';
     }
     const headMatch = /^(\S+)/.exec(raw);
     const headRaw = headMatch ? headMatch[1] : '';
@@ -120,7 +120,7 @@ export function policyError(command, { mode = 'blacklist' } = {}) {
 
   // 黑名单模式：默认放行，只拦破坏性指令 + 高危元字符。
   if (BLACKLIST_META_RE.test(raw)) {
-    return '命令含被禁止的 shell 元字符（` $ % ^ 或控制符），不允许命令替换/变量展开/转义';
+    return '命令含被禁止的 shell 元字符（` % ^ 或控制符），不允许命令替换/变量展开/转义';
   }
   for (const rule of DANGEROUS_RULES) {
     if (rule.re.test(raw)) return `命令被破坏性指令黑名单拦截：${rule.note}`;
