@@ -118,11 +118,16 @@ import { normalizeExecConfig, policyError, runCommand } from '../src/qq-exec.mjs
 // ── 6. 黑名单模式：拦截高危元字符（命令替换/变量/转义）────────────────────
 {
   for (const bad of [
-    'echo `whoami`', 'echo $(whoami)', 'echo %PATH%', 'ec^ho hi',
+    'echo `whoami`', 'echo %PATH%', 'ec^ho hi',
     'echo a\nrm -rf .', 'echo a\r\nrm -rf .',
   ]) {
     assert.match(policyError(bad, { mode: 'blacklist' }), /元字符/, `黑名单应拦（元字符）：${JSON.stringify(bad)}`);
   }
+  // $ 现在是允许的（cmd 不展开 $；PowerShell 的 $_ / $env: 常用）
+  for (const ok of ['echo $_.Id', 'echo $env:PATH']) {
+    assert.equal(policyError(ok, { mode: 'blacklist' }), null, `$ 不该被拦：${ok}`);
+  }
+
   // fork bomb（即使绕过元字符，也命中黑名单）
   assert.match(policyError(':(){ :|:& };:', { mode: 'blacklist' }), /破坏性指令黑名单|元字符/, 'fork bomb 应被拦');
 }
