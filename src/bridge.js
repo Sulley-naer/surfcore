@@ -1607,6 +1607,11 @@ let ownerTaskState = normalizeTaskState(readJsonSafe(OWNER_TASKS_FILE, null));
 const MEMORY_DB_FILE = path.join(STATE_DIR, 'memory', 'elysia-memory.sqlite');
 let memoryDb = null;
 let memoryDbFailed = '';
+// 记忆开关要读 cfg.socialV2.memory，而 cfg 是 main() 的局部变量（模块级函数拿不到），
+// 这里留一个由 main() 注入的引用；否则 noteMemoryEvent 会抛 ReferenceError 被上层 catch 吞掉，
+// 表现就是「记忆库迁移完成后再也不增长」。
+let memoryCfgRef = null;
+function bindMemoryConfig(c) { memoryCfgRef = c; }
 function memoryHandle() {
   if (memoryDb) return memoryDb;
   if (memoryDbFailed) return null;
@@ -1620,7 +1625,7 @@ function memoryHandle() {
   return memoryDb;
 }
 function noteMemoryEvent({ role, text, channel = 'qq', convKey = null, speaker = null, ts = Date.now(), meta = null }) {
-  if (cfg.socialV2?.memory?.enabled === false) return;
+  if (memoryCfgRef?.socialV2?.memory?.enabled === false) return;
   const body = String(text ?? '').trim();
   if (!body) return;
   const db = memoryHandle();
@@ -1974,6 +1979,7 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  bindMemoryConfig(cfg);
   moduleVoiceAsr = createVoiceAsr({ getCfg: () => cfg, log });
   // 语音转写常驻服务：启动时自拉起（模型常驻内存），失败不影响桥接（转写会回退按需加载）。
   void moduleVoiceAsr.startServer().then((r) => {
@@ -15705,7 +15711,8 @@ async function main() {
         conversationKey,
         text,
       });
-      noteMemoryEvent({ role: isOwner ? 'owner' : 'guest', text, channel: kind === 'group' ? 'qq-group' : 'qq', convKey: conversationKey, speaker: String(event.sender?.card || event.sender?.nickname || '') });
+      try { noteMemoryEvent({ role: isOwner ? 'owner' : 'guest', text, channel: kind === 'group' ? 'qq-group' : 'qq', convKey: conversationKey, speaker: String(event.sender?.card || event.sender?.nickname || '') });
+      } catch (error) { log(`[记忆] 写入异常：${error?.message ?? error}`); }
     } catch {}
   }
 
