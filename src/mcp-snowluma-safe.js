@@ -1419,7 +1419,13 @@ if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
         limit: z.number().optional().describe('返回条数，默认 8，最多 20'),
       },
       async ({ key, token, query, limit }) => {
-        const r = await agentApi('/api/socialV2/memory-search', { key, token, query, limit }, 30000);
+        const data = await agentApi('/api/socialV2/memory-search', {
+          method: 'POST',
+          body: JSON.stringify({ key, token, query, ...(limit ? { limit } : {}) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
         return { content: [{ type: 'text', text: JSON.stringify(r) }] };
       },
     );
@@ -1435,7 +1441,13 @@ if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
         id: z.string().describe('记忆 id'),
       },
       async ({ key, token, id }) => {
-        const r = await agentApi('/api/socialV2/memory-get', { key, token, id }, 30000);
+        const data = await agentApi('/api/socialV2/memory-get', {
+          method: 'POST',
+          body: JSON.stringify({ key, token, id }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
         return { content: [{ type: 'text', text: JSON.stringify(r) }] };
       },
     );
@@ -1451,7 +1463,13 @@ if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
         day: z.string().optional().describe('YYYY-MM-DD'),
       },
       async ({ key, token, day }) => {
-        const r = await agentApi('/api/socialV2/memory-day', { key, token, day }, 30000);
+        const data = await agentApi('/api/socialV2/memory-day', {
+          method: 'POST',
+          body: JSON.stringify({ key, token, ...(day ? { day } : {}) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
         return { content: [{ type: 'text', text: JSON.stringify(r) }] };
       },
     );
@@ -1465,21 +1483,7 @@ if (!ownerToolsInPlugin && cfg.socialV2?.tools?.phoneResult !== false) {
 }
 
 if (!ownerToolsInPlugin && cfg.socialV2?.tools?.wechatSend !== false) {
-    if (cfg.socialV2?.tools?.help !== false) {
-    server.tool(
-      'qq_help',
-      '查「我能做什么」：不带 topic 返回能力总览，带 topic（run_code/tasks/schedule/phone/memory/computer/see/images/subagent/wechat/context）返回边界与例子。拿不准有没有这个能力时先查这里。',
-      {
-        key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
-        token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-        topic: z.string().optional().describe('主题 id，可省略'),
-      },
-      async ({ key, token, topic }) =>
-        agentApi('/api/socialV2/help', { key, token, ...(topic ? { topic } : {}) }),
-    );
-  }
-
-server.tool(
+  server.tool(
     'qq_wechat_send',
     '把一句话发到微信（走本机微信适配器，主人微信里能看到）。适合「微信上回他」或者主动发条消息。默认发给 socialV2.wechat.chatId 配置的那个会话；一次最多 900 字，超了会自动拆成几条。仅管理员私聊可用。',
     {
@@ -1490,10 +1494,41 @@ server.tool(
     },
     async ({ key, token, text, chatId }) => {
       try {
-        const r = await agentApi('/api/socialV2/wechat-send', { key, token, text, chatId }, 30000);
+        const data = await agentApi('/api/socialV2/wechat-send', {
+          method: 'POST',
+          body: JSON.stringify({ key, token, text, chatId }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(data) }] };
         return { content: [{ type: 'text', text: JSON.stringify(r) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `发送微信消息失败：${error?.message ?? error}` }], isError: true };
+      }
+    },
+  );
+}
+
+if (!ownerToolsInPlugin && cfg.socialV2?.tools?.help !== false) {
+  server.tool(
+    'qq_help',
+    '查「我能做什么」：不带 topic 返回能力总览，带 topic（run_code/tasks/schedule/phone/memory/computer/see/images/subagent/wechat/context）返回边界与例子。拿不准有没有这个能力时先查这里。',
+    {
+      key: z.string().describe('会话 key，格式 private:QQ号（仅管理员私聊）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      topic: z.string().optional().describe('主题 id，可省略'),
+    },
+    async ({ key, token, topic }) => {
+      try {
+        const data = await agentApi('/api/socialV2/help', {
+          method: 'POST',
+          body: JSON.stringify({ key, token, ...(topic ? { topic } : {}) }),
+          headers: { 'x-agent-token': token },
+          timeoutMs: 30000
+        });
+        return { content: [{ type: 'text', text: String(data?.text ?? '') }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `查能力失败：${error?.message ?? error}` }], isError: true };
       }
     },
   );
